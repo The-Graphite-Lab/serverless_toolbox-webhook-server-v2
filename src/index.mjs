@@ -14,7 +14,13 @@ function normalizeEvent(event) {
 
   if (isHttpApi) {
     // HTTP API pathParameters uses {proxy+} key, extract it
-    const proxyPath = event.pathParameters?.proxy || event.pathParameters?.instanceID;
+    let proxyPath = event.pathParameters?.proxy || event.pathParameters?.instanceID;
+    
+    // Strip /instance/ prefix if present (common path prefix)
+    if (proxyPath && proxyPath.startsWith("instance/")) {
+      proxyPath = proxyPath.substring("instance/".length);
+      console.log("Stripped /instance/ prefix, proxyPath now:", proxyPath);
+    }
     
     // Normalize HTTP API event to REST API format
     return {
