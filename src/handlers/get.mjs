@@ -31,18 +31,41 @@ import { getClientSecret } from "../helperToken/clientSecret.mjs";
 import { loadClient } from "../services/client.mjs";
 
 export async function handleGetRequest(event) {
-  const accept = event?.headers?.accept;
-  if (!accept?.includes("text/html")) throw new Error("webpage not accessible");
+  // Check Accept header - be lenient for browser requests
+  // Allow if no Accept header (browser direct navigation), includes text/html, or accepts all
+  const accept = event?.headers?.accept || event?.headers?.Accept || "";
+  const acceptLower = accept.toLowerCase();
+  
+  // Only reject if Accept header explicitly requests JSON only (no HTML, no wildcard)
+  // This allows:
+  // - No Accept header (browser direct navigation)
+  // - Accept: text/html (browser HTML request)
+  // - Accept: */* (browser accepts all)
+  // - Accept: text/html,application/xhtml+xml (browser HTML variants)
+  if (accept && 
+      acceptLower.includes("application/json") && 
+      !acceptLower.includes("text/html") && 
+      !acceptLower.includes("*/*")) {
+    throw new Error("webpage not accessible");
+  }
 
   let greedy = event.pathParameters?.instanceID;
+  console.log("=== GET HANDLER DEBUG ===");
+  console.log("Raw greedy from pathParameters:", greedy);
+  console.log("Full pathParameters:", JSON.stringify(event.pathParameters));
+  
   if (typeof greedy === "string") {
     try {
       greedy = decodeURIComponent(greedy);
+      console.log("Decoded greedy:", greedy);
     } catch {}
   }
   const instanceID = await resolveInstanceId(greedy);
+  console.log("Resolved instanceID:", instanceID);
   const instance = await loadInstance(instanceID);
+  console.log("Instance loaded:", instance?.id);
   const webhook = await loadWebhook(instance.WebhookID);
+  console.log("Webhook loaded:", webhook?.id);
 
   // Load client data if available
   const client = await loadClient(webhook.ClientID);
