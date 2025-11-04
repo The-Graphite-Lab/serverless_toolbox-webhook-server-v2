@@ -1,0 +1,344 @@
+---
+description: "Backward compatibility requirements for V2 to maintain V1 API compatibility"
+alwaysApply: true
+---
+
+# Backward Compatibility Requirements
+
+## Overview
+
+V2 must maintain **100% API compatibility** with V1 to ensure existing integrations continue working. This document outlines all compatibility requirements that must be preserved.
+
+## API Compatibility Checklist
+
+### Path Parameter Handling
+
+**V1 Behavior**: Supports greedy path matching for instance IDs
+
+- Path format: `/{instanceID}` or `/{webhookID}/{externalID}`
+- Path may include `/auth` suffix which should be stripped
+- Path parameters are URL-encoded and must be decoded
+- Instance ID resolution:
+  1. If path contains `/`, resolve via `byWebhookByExternalID` index
+  2. Otherwise, use path as direct instance ID
+
+**V2 Requirement**: Must maintain exact same behavior
+
+```javascript
+// This logic MUST be preserved
+let greedy = event.pathParameters?.instanceID;
+if (typeof greedy === "string") {
+  try {
+    greedy = decodeURIComponent(greedy);
+  } catch {}
+}
+const instanceID = await resolveInstanceId(greedy);
+```
+
+### Query String Token Support (Legacy)
+
+**V1 Behavior**: Supports `?token=...` query parameter for authentication
+
+- Only works if `instance.authKey` exists
+- Uses compact token verification with legacy signing key
+- Derived from: `deriveSigningKey(clientSecret, instance.authKey)`
+- Must be checked before password/cookie authentication
+
+**V2 Requirement**: Must continue to support query tokens
+
+```javascript
+// This check MUST be preserved in verifyAccessOrPasswordPage()
+const qsToken = event.queryStringParameters?.token;
+if (qsToken && instance?.authKey) {
+  // Verify compact token (legacy)
+  // Return { ok: true } if valid
+}
+```
+
+### Cookie Authentication
+
+**V1 Behavior**: JWT cookie authentication with specific format
+
+- Cookie name: `tgl_wi_auth.{instanceId}`
+- Cookie path: `/instance/`
+- Cookie domain: `.thegraphitelab.com`
+- Cookie attributes: `HttpOnly`, `Secure`, `SameSite=Strict`
+- Cookie TTL: 7 days (604800 seconds)
+- JWT payload: `{ iid: instance.id, tv: instance.tokenVersion }`
+- JWT issuer: `"tgl"`
+- JWT audience: `wi:{instanceId}`
+
+**V2 Requirement**: Must maintain exact cookie format
+
+- Cookie name generation must match: `cookieNameFor(instanceId)`
+- Cookie attributes must match exactly
+- JWT signing/verification must use same algorithm and claims
+- Token version checking must work identically
+
+### Password Protection Flow
+
+**V1 Behavior**: Password protection via `webhook.passwordProtected` flag
+
+- Password stored in `instance.password`
+- Password exchange via POST to `/{instanceID}/auth` or `?auth=1`
+- Password page shown when authentication required
+- Password validation: plain text comparison
+
+**V2 Requirement**: Must maintain password protection
+
+- `webhook.passwordProtected` flag must be respected
+- Password exchange endpoint must work identically
+- Password page HTML must match (or be compatible)
+- Password validation logic must match
+
+### HTML Template Rendering
+
+**V1 Behavior**: HTML templates with variable replacement
+
+- Variable syntax: `{{variableName}}`
+- Supports nested properties: `{{client.name}}`
+- Special handling for `{{postEvent}}` - JSON-escaped
+- Script tag handling: Empty replacements become `""` inside `<script>`
+- Template data: `inputs` merged with `client` data
+- Event data: Most recent submit event merged into template
+
+**V2 Requirement**: Must render HTML identically
+
+```javascript
+// This logic MUST be preserved
+const templateData = {
+  ...inputs,
+  client: client || {},
+};
+htmlString = replaceHtmlVariables(htmlString, templateData);
+if (postEvent) htmlString = await replaceHtmlWithEvent(htmlString, postEvent);
+```
+
+### HTML Document Structure
+
+**V1 Behavior**: Complete HTML document with metadata
+
+- Meta tags: `tgl-instance-id`, `tgl-webhook-id`, `tgl-client-id`
+- Script block: `InstanceMeta` object and global variables
+- Title, favicon, CSS from webhook
+- Default favicon if none provided
+
+**V2 Requirement**: Must generate identical HTML structure
+
+- Meta tags must match exactly
+- Script block must match exactly
+- Global variables (`instanceId`, `webhookId`, `client`) must be available
+
+### POST Request Handling
+
+**V1 Behavior**: Form submission with file uploads
+
+- Accepts multipart/form-data
+- Files uploaded to S3: `{FILE_PREFIX}/{instanceID}/{filename}`
+- File metadata stored in event body
+- Presigned URLs generated for files
+- Event created in DynamoDB
+- Subscriptions triggered (if configured)
+- Returns: `"success"` string
+
+**V2 Requirement**: Must handle POST requests identically
+
+- Form parsing must match
+- File upload logic must match
+- S3 paths must match
+- Event creation must match
+- Subscription triggering must match
+- Response format must match
+
+### Authentication Exchange Endpoint
+
+**V1 Behavior**: POST to `/{instanceID}/auth` or `?auth=1`
+
+- Accepts JSON: `{ "password": "..." }`
+- Validates password against `instance.password`
+- Issues JWT cookie on success
+- Returns: `{ "ok": true }` with `Set-Cookie` header
+
+**V2 Requirement**: Must work identically
+
+- Endpoint detection: `rawPath.endsWith("/auth") || queryStringParameters?.auth === "1"`
+- Password validation must match
+- Cookie issuance must match
+- Response format must match
+
+### Error Handling
+
+**V1 Behavior**: Specific error responses
+
+- GET requests: Return password page HTML on auth failure (200 status)
+- POST requests: Return JSON error on auth failure (401 status)
+- Instance not found: Return password page HTML
+- Method not allowed: Return text "Method Not Allowed..."
+
+**V2 Requirement**: Must match error responses
+
+- Status codes must match
+- Response formats must match
+- Error messages must match (or be compatible)
+
+### Instance ID Resolution
+
+**V1 Behavior**: Supports two resolution methods
+
+1. **Direct ID**: `/{instanceID}` → Use as-is
+2. **Composite ID**: `/{webhookID}/{externalID}` → Query `byWebhookByExternalID` index
+
+**V2 Requirement**: Must support both methods
+
+```javascript
+// This logic MUST be preserved
+if (greedy.includes("/")) {
+  const [webhookID, externalID] = greedy.split("/");
+  // Query byWebhookByExternalID index
+  // Return instance.id
+}
+return greedy; // Direct instance ID
+```
+
+### Cookie Path Handling
+
+**V1 Behavior**: Cookie path from request
+
+- Cookie path computed from request path (minus `/auth`)
+- Used for cookie path attribute
+- Path: `/instance/` for most cases
+
+**V2 Requirement**: Must match cookie path logic
+
+- Cookie path must be computed identically
+- Path attribute must match
+
+### File Upload Endpoints
+
+**V1 Behavior**: Special endpoints for file uploads
+
+- `/{instanceID}/upload-url` - Generate presigned URL
+- `/{instanceID}/upload-complete` - Notify upload complete
+
+**V2 Requirement**: Must support upload endpoints
+
+- Endpoint detection must match
+- Presigned URL generation must match
+- Upload complete handling must match
+
+### Response Headers
+
+**V1 Behavior**: Specific response headers
+
+- `Content-Type: text/html` for GET requests
+- `Content-Type: application/json` for POST auth exchange
+- `Set-Cookie` header for authentication cookies
+- CORS headers if configured
+
+**V2 Requirement**: Must match response headers
+
+- Content-Type must match request type
+- Set-Cookie format must match exactly
+- CORS headers must be compatible
+
+## Testing Compatibility
+
+### Test Cases
+
+1. **Greedy Path Matching**
+   - Test: `/{webhookID}/{externalID}` → Should resolve via index
+   - Test: `/{instanceID}` → Should use directly
+   - Test: `/{instanceID}/auth` → Should strip `/auth`
+
+2. **Query Token Authentication**
+   - Test: `?token=...` with `instance.authKey` → Should authenticate
+   - Test: `?token=...` without `instance.authKey` → Should show password page
+
+3. **Cookie Authentication**
+   - Test: Valid JWT cookie → Should authenticate
+   - Test: Invalid JWT cookie → Should show password page
+   - Test: Expired JWT cookie → Should show password page
+   - Test: Revoked token (version mismatch) → Should show password page
+
+4. **Password Protection**
+   - Test: `webhook.passwordProtected === false` → Should allow access
+   - Test: `webhook.passwordProtected === true` → Should require password
+   - Test: POST to `/auth` with correct password → Should issue cookie
+   - Test: POST to `/auth` with wrong password → Should return 401
+
+5. **HTML Rendering**
+   - Test: Variable replacement → Should match V1 output
+   - Test: Nested properties → Should work (`{{client.name}}`)
+   - Test: `{{postEvent}}` → Should be JSON-escaped
+   - Test: Script tag handling → Should use `""` for empty values
+
+6. **POST Form Submission**
+   - Test: Form data → Should parse correctly
+   - Test: File uploads → Should upload to S3 correctly
+   - Test: Event creation → Should create event in DynamoDB
+   - Test: Subscriptions → Should trigger subscriptions
+
+## Migration Strategy
+
+### Phase 1: Deploy V2 with Compatibility
+
+- Deploy V2 Lambda function
+- Point `web.thegraphitelab.com` to new API Gateway
+- Keep V1 running (Amplify) as backup
+- Test all V1 endpoints work identically
+
+### Phase 2: Monitor and Verify
+
+- Monitor CloudWatch Logs for errors
+- Verify all authentication methods work
+- Verify HTML rendering matches
+- Verify file uploads work
+
+### Phase 3: Add New Features
+
+- Add `authenticationType: "user"` support
+- Maintain backward compatibility
+- Test new features don't break existing flows
+
+### Phase 4: Deprecate V1
+
+- Once V2 is stable, deprecate V1
+- Migrate all traffic to V2
+- Remove V1 infrastructure
+
+## Breaking Changes (NOT ALLOWED)
+
+The following would break compatibility and MUST NOT be changed:
+
+1. ❌ Changing path parameter format
+2. ❌ Removing query token support
+3. ❌ Changing cookie name format
+4. ❌ Changing cookie attributes
+5. ❌ Changing JWT payload structure
+6. ❌ Changing HTML variable syntax
+7. ❌ Changing response formats
+8. ❌ Changing error response formats
+9. ❌ Changing file upload behavior
+10. ❌ Changing instance ID resolution logic
+
+## Compatibility Verification
+
+Before deploying to production:
+
+1. ✅ Test all authentication methods
+2. ✅ Test HTML rendering matches V1
+3. ✅ Test file uploads work identically
+4. ✅ Test error responses match V1
+5. ✅ Test path parameter handling matches V1
+6. ✅ Test cookie authentication matches V1
+7. ✅ Test query token authentication matches V1
+8. ✅ Test password protection matches V1
+
+## Code References
+
+- Path resolution: `src/services/instance.mjs::resolveInstanceId()`
+- Authentication: `src/auth/password.mjs::verifyAccessOrPasswordPage()`
+- Cookie handling: `src/auth/cookie.mjs`
+- HTML rendering: `src/utils/html.mjs`
+- GET handler: `src/handlers/get.mjs`
+- POST handler: `src/handlers/post.mjs`

@@ -1,0 +1,514 @@
+---
+description: "Debugging strategies and common issues for the webhook server"
+alwaysApply: true
+---
+
+# Debugging Guide
+
+## Local Testing
+
+### Serverless Offline
+
+Install and configure serverless-offline plugin:
+
+```bash
+npm install --save-dev serverless-offline
+```
+
+```yaml
+# serverless.yml
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+    lambdaPort: 3002
+```
+
+Run locally:
+
+```bash
+serverless offline --stage dev
+```
+
+### Local Testing with AWS Credentials
+
+For local testing to access real AWS resources:
+
+```bash
+# Set AWS credentials
+export AWS_PROFILE=your-profile
+export AWS_REGION=us-east-2
+
+# Run serverless offline
+serverless offline --stage dev
+```
+
+### Test Event Files
+
+Create test events for local invocation:
+
+```json
+// test-event.json
+{
+  "httpMethod": "GET",
+  "path": "/instance/abc123",
+  "pathParameters": {
+    "instanceID": "abc123"
+  },
+  "headers": {
+    "accept": "text/html",
+    "cookie": "tgl_wi_auth.abc123=..."
+  },
+  "queryStringParameters": null
+}
+```
+
+Invoke locally:
+
+```bash
+serverless invoke local -f webhookServer --stage dev --path test-event.json
+```
+
+## CloudWatch Logs
+
+### Viewing Logs
+
+```bash
+# Tail logs
+serverless logs -f webhookServer --stage prod --tail
+
+# View recent logs
+serverless logs -f webhookServer --stage prod
+
+# View logs from AWS CLI
+aws logs tail /aws/lambda/toolbox-webhook-server-v2-prod-webhookServer --follow --region us-east-2
+```
+
+### Log Group Name
+
+- Pattern: `/aws/lambda/{service-name}-{stage}-{function-name}`
+- Example: `/aws/lambda/toolbox-webhook-server-v2-prod-webhookServer`
+
+### Log Filtering
+
+Filter logs by instance ID:
+
+```bash
+aws logs filter-log-events \
+  --log-group-name /aws/lambda/toolbox-webhook-server-v2-prod-webhookServer \
+  --filter-pattern "instanceID" \
+  --region us-east-2
+```
+
+### Log Retention
+
+Configure retention in serverless.yml:
+
+```yaml
+provider:
+  logRetentionInDays: 7
+```
+
+## Common Authentication Issues
+
+### Issue: "Instance not found"
+
+**Symptoms**: Error in logs: "Instance not found"
+
+**Debugging**:
+1. Check instance ID format - may need URL decoding
+2. Verify instance exists in DynamoDB:
+   ```bash
+   aws dynamodb get-item \
+     --table-name WebhookInstances-bm44urfj6bcajm63ohamnsj4au-staging \
+     --key '{"id": {"S": "instance-id"}}' \
+     --region us-east-2
+   ```
+3. Check path parameter extraction logic
+4. Verify instance ID resolution for composite IDs
+
+**Common Causes**:
+- Instance ID not URL-decoded
+- Composite ID (`webhookID/externalID`) not resolved correctly
+- Table name mismatch
+
+### Issue: "Invalid authentication token"
+
+**Symptoms**: Authentication fails, password page shown
+
+**Debugging**:
+1. Check cookie extraction:
+   ```javascript
+   const cookieMap = getCookieMap(event.headers?.cookie || "");
+   console.log("Cookie map:", cookieMap);
+   ```
+2. Verify cookie name matches: `tgl_wi_auth.{instanceId}`
+3. Check JWT verification:
+   ```javascript
+   const result = verifyJwtHs256({...});
+   console.log("JWT verification:", result);
+   ```
+4. Verify client secret retrieval:
+   ```javascript
+   const secret = await getClientSecret(webhook.ClientID);
+   console.log("Client secret retrieved:", !!secret);
+   ```
+
+**Common Causes**:
+- Cookie not set correctly (path, domain, Secure flag)
+- Token expired (check `exp` claim)
+- Token version mismatch (check `tv` vs `instance.tokenVersion`)
+- Clock skew (verify `nowSec()` vs token `iat`)
+
+### Issue: "Token has been revoked"
+
+**Symptoms**: Authentication fails with token version mismatch
+
+**Debugging**:
+1. Check token version in payload:
+   ```javascript
+   const payloadVersion = parseInt(payload.tv);
+   const expectedVersion = parseInt(instance.tokenVersion || 0);
+   console.log("Token version:", payloadVersion, "Expected:", expectedVersion);
+   ```
+2. Verify instance token version in DynamoDB
+3. Check if token version was incremented (revocation)
+
+**Common Causes**:
+- Token version incremented after cookie issued
+- Token version not matching instance version
+- Type mismatch (string vs number)
+
+### Issue: Password authentication not working
+
+**Symptoms**: POST to `/auth` returns 401
+
+**Debugging**:
+1. Check password comparison:
+   ```javascript
+   const provided = payload?.password || "";
+   const expected = instance?.password || "";
+   console.log("Password match:", provided === expected);
+   ```
+2. Verify `webhook.passwordProtected === true`
+3. Check request path: `rawPath.endsWith("/auth") || queryStringParameters?.auth === "1"`
+
+**Common Causes**:
+- Password mismatch (case-sensitive)
+- Password not set on instance
+- Request not routed to auth endpoint correctly
+
+### Issue: Cognito authentication not working
+
+**Symptoms**: `authenticationType: "user"` instances fail to authenticate
+
+**Debugging**:
+1. Extract token from Authorization header:
+   ```javascript
+   const authHeader = event.headers?.authorization || event.headers?.Authorization;
+   const token = authHeader?.replace("Bearer ", "");
+   ```
+2. Verify Cognito User Pool ID:
+   ```javascript
+   const userPoolId = process.env.COGNITO_USER_POOL_ID;
+   console.log("User Pool ID:", userPoolId);
+   ```
+3. Validate token with Cognito:
+   ```javascript
+   import { CognitoJwtVerifier } from "aws-jwt-verify";
+   const verifier = CognitoJwtVerifier.create({
+     userPoolId: "us-east-2_QUpKtOof0",
+     tokenUse: "id",
+   });
+   const payload = await verifier.verify(token);
+   ```
+
+**Common Causes**:
+- Token not provided in Authorization header
+- Token expired or invalid
+- User Pool ID mismatch
+- Token use mismatch (id vs access token)
+
+## DynamoDB Debugging
+
+### Query Execution
+
+Debug DynamoDB queries:
+
+```javascript
+const res = await docClient.send(
+  new QueryCommand({
+    TableName: TABLES.WEBHOOK_INSTANCES,
+    IndexName: "byWebhookByExternalID",
+    KeyConditionExpression: "WebhookID = :webhookID and externalID = :externalID",
+    ExpressionAttributeValues: {
+      ":webhookID": webhookID,
+      ":externalID": externalID,
+    },
+  })
+);
+console.log("Query result:", JSON.stringify(res, null, 2));
+```
+
+### Common DynamoDB Issues
+
+**Issue: Table not found**
+- Verify table name in environment variables
+- Check table exists in AWS Console
+- Verify region is `us-east-2`
+
+**Issue: Index not found**
+- Verify index name matches exactly
+- Check index exists on table
+- Verify GSI is active
+
+**Issue: Query returns no results**
+- Check KeyConditionExpression values
+- Verify data exists in table
+- Check ExpressionAttributeValues format
+
+### DynamoDB CLI Testing
+
+```bash
+# Get item
+aws dynamodb get-item \
+  --table-name WebhookInstances-bm44urfj6bcajm63ohamnsj4au-staging \
+  --key '{"id": {"S": "instance-id"}}' \
+  --region us-east-2
+
+# Query index
+aws dynamodb query \
+  --table-name WebhookInstances-bm44urfj6bcajm63ohamnsj4au-staging \
+  --index-name byWebhookByExternalID \
+  --key-condition-expression "WebhookID = :webhookID and externalID = :externalID" \
+  --expression-attribute-values '{
+    ":webhookID": {"S": "webhook-id"},
+    ":externalID": {"S": "external-id"}
+  }' \
+  --region us-east-2
+```
+
+## S3 Debugging
+
+### Presigned URL Issues
+
+**Issue: Presigned URL not working**
+
+**Debugging**:
+1. Check S3 bucket name and region
+2. Verify IAM permissions for S3
+3. Check URL expiration time
+4. Verify file key format
+
+```javascript
+const url = await generatePresignedUrl(
+  S3_CONFIG.BUCKET,
+  s3Key,
+  S3_CONFIG.PRESIGNED_URL_EXPIRY
+);
+console.log("Presigned URL:", url);
+```
+
+### S3 File Upload Issues
+
+**Issue: File upload fails**
+
+**Debugging**:
+1. Check file size limits (Lambda payload limit: 6MB)
+2. Verify S3 bucket permissions
+3. Check file key format
+4. Verify multipart upload for large files
+
+```javascript
+await uploadFileToS3(S3_CONFIG.BUCKET, s3Key, file);
+console.log("File uploaded:", s3Key);
+```
+
+## Secrets Manager Debugging
+
+### Secret Retrieval Issues
+
+**Issue: Secret not found**
+
+**Debugging**:
+1. Verify secret name format: `Client_{clientId}_EncodingSecret`
+2. Check secret exists in Secrets Manager:
+   ```bash
+   aws secretsmanager get-secret-value \
+     --secret-id Client_abc123_EncodingSecret \
+     --region us-east-2
+   ```
+3. Verify IAM permissions for Secrets Manager
+4. Check secret format: `{ "value": "..." }`
+
+```javascript
+const secret = await getClientSecret(clientId);
+console.log("Secret retrieved:", !!secret);
+```
+
+## HTML Rendering Issues
+
+### Issue: Variables not replaced
+
+**Debugging**:
+1. Check variable syntax: `{{variableName}}`
+2. Verify template data structure
+3. Check nested property access: `{{client.name}}`
+4. Verify script tag handling
+
+```javascript
+console.log("Template data:", templateData);
+console.log("HTML before:", htmlString.substring(0, 500));
+htmlString = replaceHtmlVariables(htmlString, templateData);
+console.log("HTML after:", htmlString.substring(0, 500));
+```
+
+### Issue: postEvent not rendering
+
+**Debugging**:
+1. Check event retrieval:
+   ```javascript
+   const recentSubmitEvent = await getMostRecentSubmitEvent(instanceID);
+   console.log("Recent event:", recentSubmitEvent);
+   ```
+2. Verify `{{postEvent}}` replacement
+3. Check JSON escaping logic
+
+## API Gateway Debugging
+
+### Request/Response Logging
+
+Enable API Gateway logging:
+
+```yaml
+provider:
+  logs:
+    httpApi:
+      accessLogging: true
+```
+
+### Common API Gateway Issues
+
+**Issue: CORS errors**
+- Verify CORS configuration in serverless.yml
+- Check `Access-Control-Allow-Origin` header
+- Verify `Access-Control-Allow-Credentials` for cookies
+
+**Issue: 502 Bad Gateway**
+- Check Lambda function errors in CloudWatch
+- Verify Lambda timeout (increase if needed)
+- Check Lambda memory (increase if needed)
+
+**Issue: 504 Gateway Timeout**
+- Increase Lambda timeout in serverless.yml
+- Check Lambda execution time in CloudWatch
+- Optimize DynamoDB queries
+
+## Performance Debugging
+
+### Lambda Execution Time
+
+Monitor Lambda duration in CloudWatch:
+
+```bash
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/Lambda \
+  --metric-name Duration \
+  --dimensions Name=FunctionName,Value=toolbox-webhook-server-v2-prod-webhookServer \
+  --start-time 2024-01-01T00:00:00Z \
+  --end-time 2024-01-01T23:59:59Z \
+  --period 3600 \
+  --statistics Average,Maximum \
+  --region us-east-2
+```
+
+### Optimize DynamoDB Queries
+
+- Use specific indexes instead of scans
+- Limit query results when possible
+- Use projection expressions to limit returned data
+
+### Optimize S3 Operations
+
+- Generate presigned URLs asynchronously
+- Cache presigned URLs when possible
+- Use appropriate expiration times
+
+## Error Handling Best Practices
+
+### Logging Errors
+
+```javascript
+try {
+  // Operation
+} catch (err) {
+  console.error("Error context:", {
+    instanceId,
+    webhookId,
+    error: err.message,
+    stack: err.stack,
+  });
+  // Don't log sensitive data (passwords, tokens)
+  throw err;
+}
+```
+
+### Error Response Format
+
+```javascript
+// GET requests - return password page
+return {
+  statusCode: "200",
+  headers: { "Content-Type": "text/html" },
+  body: PASSWORD_PAGE_HTML,
+};
+
+// POST requests - return JSON error
+return {
+  statusCode: "401",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ ok: false, error: "Authentication required" }),
+};
+```
+
+## Debugging Checklist
+
+When debugging an issue:
+
+1. ✅ Check CloudWatch Logs for errors
+2. ✅ Verify AWS resource permissions (IAM)
+3. ✅ Check environment variables are set correctly
+4. ✅ Verify table/index names match
+5. ✅ Test authentication flow step-by-step
+6. ✅ Check request/response formats match V1
+7. ✅ Verify secrets are accessible
+8. ✅ Test with real AWS resources (not mocks)
+9. ✅ Check Lambda timeout and memory
+10. ✅ Verify API Gateway configuration
+
+## Useful Commands
+
+```bash
+# View Lambda function configuration
+aws lambda get-function-configuration \
+  --function-name toolbox-webhook-server-v2-prod-webhookServer \
+  --region us-east-2
+
+# Invoke function directly
+aws lambda invoke \
+  --function-name toolbox-webhook-server-v2-prod-webhookServer \
+  --payload file://test-event.json \
+  --region us-east-2 \
+  response.json
+
+# Check API Gateway logs
+aws apigatewayv2 get-apis --region us-east-2
+
+# Test DynamoDB connection
+aws dynamodb list-tables --region us-east-2
+
+# Test Secrets Manager access
+aws secretsmanager list-secrets --region us-east-2
+```

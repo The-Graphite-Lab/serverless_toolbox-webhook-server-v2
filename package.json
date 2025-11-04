@@ -1,0 +1,26 @@
+{
+  "name": "toolbox-webhook-server-v2",
+  "version": "2.0.0",
+  "description": "Serverless Framework deployment of the Toolbox Webhook Server V2",
+  "type": "module",
+  "scripts": {
+    "deploy:dev": "serverless deploy --stage dev",
+    "deploy:prod": "serverless deploy --stage prod",
+    "deploy:function": "serverless deploy function -f webhookServer",
+    "offline": "serverless offline --stage dev",
+    "logs": "serverless logs -f webhookServer --tail",
+    "remove": "serverless remove"
+  },
+  "dependencies": {
+    "axios": "^1.6.7",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "serverless": "^3.40.0",
+    "serverless-offline": "^13.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+

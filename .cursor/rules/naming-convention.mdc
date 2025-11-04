@@ -1,0 +1,68 @@
+# Serverless Project Naming Convention
+
+## Overview
+
+This document defines the naming convention for serverless projects in The Graphite Lab organization.
+
+## Repository Naming Convention
+
+### Format
+
+```
+serverless_<service-name>
+```
+
+Where `<service-name>` is:
+- Derived from the `service` field in `serverless.yml`
+- Converted to lowercase
+- Hyphens preserved (already kebab-case)
+- Version suffixes (v2, v3, etc.) included if present
+
+### Examples
+
+- Service: `toolbox-webhook-server-v2` → Repo: `serverless_toolbox-webhook-server-v2`
+- Service: `user-authentication-service` → Repo: `serverless_user-authentication-service`
+- Service: `api-gateway-proxy` → Repo: `serverless_api-gateway-proxy`
+- Service: `data-processor` → Repo: `serverless_data-processor`
+
+### Rules
+
+1. **Always prefix with `serverless_`** - Identifies the deployment type
+2. **Use kebab-case** - All lowercase with hyphens (no underscores except the prefix)
+3. **Include version suffix** - If the service name includes v2, v3, etc., keep it
+4. **Match serverless.yml** - Repo name should match the service name in serverless.yml
+5. **Keep it descriptive** - Name should clearly indicate the service's purpose
+
+## GitHub Organization
+
+All serverless projects should be created under: **The-Graphite-Lab**
+
+## Repository Structure
+
+After creating the repository, ensure:
+
+1. ✅ `.gitignore` includes Serverless Framework artifacts
+2. ✅ `README.md` describes the project and deployment process
+3. ✅ `serverless.yml` has correct service name matching repo name
+4. ✅ `package.json` has appropriate name and description
+5. ✅ Cursor rules are committed (`.cursor/rules/`)
+
+## Migration Checklist
+
+When creating a new serverless project repository:
+
+- [ ] Create repository with naming convention: `serverless_<service-name>`
+- [ ] Initialize git repository locally
+- [ ] Add remote: `git remote add origin https://github.com/The-Graphite-Lab/serverless_<service-name>.git`
+- [ ] Commit all files (excluding .gitignore patterns)
+- [ ] Push to main branch
+- [ ] Verify `serverless.yml` service name matches repo name pattern
+- [ ] Update README.md with repository link
+- [ ] Add any necessary GitHub Actions workflows
+- [ ] Configure branch protection rules if needed
+
+## Related Files
+
+- `serverless.yml` - Service name definition
+- `package.json` - Package name (can differ from repo name)
+- `.gitignore` - Files to exclude from version control

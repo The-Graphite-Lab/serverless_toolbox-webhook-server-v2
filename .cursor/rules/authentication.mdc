@@ -1,0 +1,217 @@
+---
+description: "Authentication patterns and flows for webhook instances"
+alwaysApply: true
+---
+
+# Authentication Patterns
+
+## Overview
+
+Webhook instances support multiple authentication types. The authentication method is determined by the `authenticationType` field on the webhook instance (new) or `passwordProtected` flag on the webhook (legacy).
+
+## Authentication Types
+
+### 1. None (No Authentication)
+- When `webhook.passwordProtected === false` AND `instance.authenticationType !== "user"`
+- Instance is publicly accessible
+- No authentication required
+
+### 2. Password Protection (Legacy)
+- When `webhook.passwordProtected === true`
+- User must provide password to access instance
+- Password stored in `instance.password`
+- Password exchange via POST to `/auth` endpoint
+
+### 3. Query Token (Legacy)
+- When `instance.authKey` exists AND query parameter `?token=...` is provided
+- Uses compact token verification with legacy signing key
+- Derived from: `deriveSigningKey(clientSecret, instance.authKey)`
+- This is a legacy method and should be maintained for backward compatibility
+
+### 4. JWT Cookie Authentication
+- Cookie-based authentication valid for 7 days
+- Cookie name pattern: `tgl_wi_auth.{instanceId}`
+- Cookie path: `/instance/`
+- Cookie domain: `.thegraphitelab.com`
+- Cookie attributes: `HttpOnly`, `Secure`, `SameSite=Strict`
+
+### 5. Cognito User Authentication (New)
+- When `instance.authenticationType === "user"`
+- Requires valid Cognito user session
+- Cognito User Pool ARN: `arn:aws:cognito-idp:us-east-2:843563127054:userpool/us-east-2_QUpKtOof0`
+- User Pool ID: `us-east-2_QUpKtOof0`
+
+## Authentication Flow
+
+### GET Request Flow
+
+1. Resolve instance ID from path parameters (supports greedy path matching)
+2. Load instance from DynamoDB
+3. Load webhook from DynamoDB
+4. Check authentication via `verifyAccessOrPasswordPage()`:
+   - If `webhook.passwordProtected === false` → Allow access
+   - If query token present AND `instance.authKey` exists → Verify compact token
+   - If JWT cookie present → Verify JWT cookie
+   - If `instance.authenticationType === "user"` → Verify Cognito token
+   - Otherwise → Show password page
+5. If authenticated, mint/refresh JWT cookie
+6. Render HTML template with instance data
+
+### POST Request Flow (Authentication Exchange)
+
+- Path: `/{instanceID}/auth` or `?auth=1`
+- Accepts JSON body: `{ "password": "..." }`
+- Validates password against `instance.password`
+- On success, issues JWT cookie
+- Returns: `{ "ok": true }` with `Set-Cookie` header
+
+### POST Request Flow (Form Submit)
+
+1. Resolve instance ID
+2. Load instance and webhook
+3. If `webhook.passwordProtected === true`:
+   - Verify access via `verifyAccessOrPasswordPage()`
+   - Return password page if not authenticated
+4. Parse form data
+5. Handle file uploads to S3
+6. Create instance event
+7. Process subscriptions
+8. Return success response
+
+## JWT Cookie Details
+
+### Cookie Creation
+
+```javascript
+const clientSecret = await getClientSecret(webhook.ClientID);
+const cookieKey = deriveCookieSigningKey(clientSecret, instance.id);
+const jwtCookie = createJwtHs256({
+  key: cookieKey,
+  payload: { iid: instance.id, tv: instance.tokenVersion >>> 0 },
+  ttlSec: COOKIE_TTL_SEC, // 7 days
+  iss: "tgl",
+  aud: `wi:${instance.id}`,
+  iat: nowSec(),
+});
+```
+
+### Cookie Verification
+
+1. Extract cookie from request headers
+2. Derive cookie signing key: `deriveCookieSigningKey(clientSecret, instanceId)`
+3. Verify JWT with:
+   - `iss`: "tgl"
+   - `aud`: `wi:{instanceId}`
+   - Clock skew tolerance: 60 seconds
+4. Verify payload claims:
+   - `payload.iid === instanceId`
+   - `payload.tv === instance.tokenVersion` (revocation check)
+
+### Token Versioning
+
+- `instance.tokenVersion` is used for token revocation
+- If token version doesn't match, token is invalid
+- Token version is a 32-bit unsigned integer (`>>> 0`)
+
+## Cognito Authentication (New)
+
+### Implementation Requirements
+
+When `instance.authenticationType === "user"`:
+
+1. Extract Cognito token from Authorization header or cookie
+2. Validate token with Cognito User Pool
+3. Verify token claims (audience, issuer, expiration)
+4. Extract user information from token
+5. Grant access if token is valid
+
+### Token Extraction
+
+- Check `Authorization: Bearer <token>` header
+- May also check Cognito session cookies
+- Token format: JWT from Cognito
+
+### Token Validation
+
+- Use `@aws-sdk/client-cognito-idp` or `aws-jwt-verify`
+- Verify token signature
+- Verify token expiration
+- Verify audience matches User Pool ID
+- Verify issuer matches Cognito
+
+## Multi-Tenancy
+
+- Authentication is scoped by `ClientID`
+- Client secrets are retrieved from Secrets Manager: `Client_{clientId}_EncodingSecret`
+- Each client has independent authentication configuration
+- Cookie signing keys are derived per-instance, per-client
+
+## Cookie Naming
+
+- Cookie name function: `cookieNameFor(instanceId)` → `tgl_wi_auth.{instanceId}`
+- Each instance gets its own cookie name
+- Cookies are instance-specific, not shared across instances
+
+## Password Protection
+
+### Password Storage
+- Stored in `instance.password` field
+- Plain text comparison (for legacy compatibility)
+- New implementations should consider password hashing
+
+### Password Page
+- HTML template served when authentication required
+- Located at `pages/password.html`
+- Exported as `PASSWORD_PAGE_HTML` constant
+
+## Error Handling
+
+### Authentication Failures
+
+- Return HTTP 200 with password page HTML (for GET requests)
+- Return HTTP 401 with JSON error (for POST requests)
+- Never expose authentication details in error messages
+- Log authentication failures for debugging (without sensitive data)
+
+### Common Authentication Errors
+
+- "Instance not found" → Invalid instance ID
+- "Invalid authentication token" → JWT verification failed
+- "Token has been revoked" → Token version mismatch
+- "Token expired" → JWT expiration check failed
+- "Authentication required" → No token/cookie provided
+
+## Backward Compatibility
+
+### Legacy Support Required
+
+1. **Query Token Support**: Must continue to work for instances with `instance.authKey`
+2. **Password Protection**: Must continue to work via `webhook.passwordProtected`
+3. **Cookie Authentication**: Must continue to work for existing sessions
+4. **Path Parameters**: Must support greedy path matching for instance IDs
+
+### Migration Path
+
+- New instances can use `authenticationType: "user"` for Cognito
+- Existing instances continue using password/JWT cookie authentication
+- Both systems must coexist during migration
+
+## Security Best Practices
+
+1. **Never log passwords or tokens** - Remove sensitive data from logs
+2. **Use HTTPS only** - Cookies are Secure flag, require HTTPS
+3. **Validate all inputs** - Sanitize instance IDs, paths, tokens
+4. **Token expiration** - JWT cookies expire after 7 days
+5. **Token revocation** - Use tokenVersion for immediate revocation
+6. **Clock skew tolerance** - Allow 60 seconds for clock differences
+7. **HttpOnly cookies** - Prevent XSS attacks
+8. **SameSite=Strict** - Prevent CSRF attacks
+
+## Code References
+
+- Password verification: `src/auth/password.mjs::verifyAccessOrPasswordPage()`
+- JWT cookie creation: `src/handlers/get.mjs` (lines 63-79)
+- JWT cookie verification: `src/auth/jwt.mjs::verifyJWTForAPI()`
+- Cookie utilities: `src/auth/cookie.mjs`
+- Token utilities: `src/helperToken/token.mjs`
+- Client secret retrieval: `src/helperToken/clientSecret.mjs`

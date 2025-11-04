@@ -1,0 +1,128 @@
+service: toolbox-webhook-server-v2
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-2
+  stage: ${opt:stage, 'dev'}
+  memorySize: 512
+  timeout: 30
+  httpApi:
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - Cookie
+        - Accept
+      allowedMethods:
+        - GET
+        - POST
+        - OPTIONS
+      allowCredentials: false
+      maxAge: 86400
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: us-east-2
+    # DynamoDB Table Names - These should be set via SSM or environment variables
+    # For now, using staging table names - update for production
+    WEBHOOK_INSTANCES_TABLE: WebhookInstances-bm44urfj6bcajm63ohamnsj4au-staging
+    WEBHOOK_INSTANCE_EVENTS_TABLE: WebhookInstanceEvents-bm44urfj6bcajm63ohamnsj4au-staging
+    WEBHOOKS_TABLE: Webhooks-bm44urfj6bcajm63ohamnsj4au-staging
+    SUBSCRIPTIONS_TABLE: Toolbox_Webhook_Subscriptions
+    CLIENTS_TABLE: Clients-bm44urfj6bcajm63ohamnsj4au-staging
+    # S3 Configuration
+    S3_BUCKET: tgltoolboxuserfiles210135-staging
+    S3_FILE_PREFIX: public/clientWebhookInstanceFiles
+    S3_PRESIGNED_URL_EXPIRY: 10800
+    # Cognito Configuration
+    COGNITO_USER_POOL_ID: us-east-2_QUpKtOof0
+    COGNITO_USER_POOL_ARN: arn:aws:cognito-idp:us-east-2:843563127054:userpool/us-east-2_QUpKtOof0
+  iam:
+    role:
+      statements:
+        # DynamoDB Permissions
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - arn:aws:dynamodb:us-east-2:843563127054:table/WebhookInstances-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/WebhookInstanceEvents-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Webhooks-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Toolbox_Webhook_Subscriptions
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Clients-*
+        # DynamoDB Index Permissions
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+          Resource:
+            - arn:aws:dynamodb:us-east-2:843563127054:table/*/index/*
+        # S3 Permissions
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+          Resource:
+            - arn:aws:s3:::tgltoolboxuserfiles210135-staging/public/*
+        # S3 Presigned URL Permissions
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+          Resource:
+            - arn:aws:s3:::tgltoolboxuserfiles210135-staging/public/*
+        # Secrets Manager Permissions
+        - Effect: Allow
+          Action:
+            - secretsmanager:GetSecretValue
+          Resource:
+            - arn:aws:secretsmanager:us-east-2:843563127054:secret:Client_*
+        # CloudWatch Logs Permissions
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: arn:aws:logs:us-east-2:843563127054:*
+
+functions:
+  webhookServer:
+    handler: src/index.handler
+    description: Webhook server Lambda function for serving HTML templates
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
+
+package:
+  patterns:
+    - '!.git/**'
+    - '!.cursor/**'
+    - '!*.md'
+    - '!*.plan.md'
+    - '!test/**'
+    - '!examples/**'
+    - '!docs/**'
+    - '!src/docs/**'
+    - '!src/examples/**'
+    - 'src/**'
+
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+    lambdaPort: 3002
+    noPrependStageInUrl: true
+

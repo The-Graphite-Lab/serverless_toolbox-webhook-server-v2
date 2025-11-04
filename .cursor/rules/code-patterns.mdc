@@ -1,0 +1,388 @@
+---
+description: "Code structure and patterns used in the webhook server project"
+alwaysApply: true
+---
+
+# Code Patterns and Structure
+
+## Module System
+
+### ES Modules (.mjs)
+
+- **All files use ES modules** - `.mjs` extension
+- Use `import`/`export` statements, not `require`/`module.exports`
+- `package.json` must have `"type": "module"`
+
+```javascript
+// Correct
+import { handleGetRequest } from "./handlers/get.mjs";
+export const handler = async (event) => { ... };
+
+// Wrong
+const { handleGetRequest } = require("./handlers/get.mjs");
+module.exports = { handler };
+```
+
+### File Naming
+
+- Use lowercase with hyphens: `get.mjs`, `post.mjs`
+- Use descriptive names: `instance.mjs`, `webhook.mjs`
+- Keep files focused on single responsibility
+
+## Project Structure
+
+```
+webpages/
+├── serverless.yml         # Serverless Framework configuration
+├── package.json          # Project dependencies
+├── src/                  # Lambda function code
+│   ├── index.mjs         # Lambda handler entry point
+│   ├── handlers/         # HTTP request handlers
+│   │   ├── get.mjs      # GET request handler
+│   │   ├── post.mjs     # POST request handler
+│   │   └── uploadUrl.mjs # Upload URL handler
+│   ├── services/         # Business logic layer
+│   │   ├── instance.mjs # Instance operations
+│   │   ├── webhook.mjs  # Webhook operations
+│   │   ├── client.mjs   # Client operations
+│   │   ├── event.mjs    # Event operations
+│   │   └── subscription.mjs # Subscription operations
+│   ├── auth/            # Authentication logic
+│   │   ├── password.mjs # Password authentication
+│   │   ├── jwt.mjs      # JWT verification
+│   │   └── cookie.mjs   # Cookie utilities
+│   ├── config/          # Configuration
+│   │   └── aws.mjs      # AWS client configuration
+│   ├── utils/           # Utility functions
+│   │   ├── html.mjs     # HTML template utilities
+│   │   ├── parser.mjs   # Form data parsing
+│   │   └── s3.mjs       # S3 operations
+│   └── helperToken/     # Token utilities
+│       ├── token.mjs    # JWT token creation/verification
+│       └── clientSecret.mjs # Client secret retrieval
+```
+
+## Handler Pattern
+
+### Lambda Handler
+
+```javascript
+// index.mjs
+export const handler = async (event) => {
+  let headers = { "Content-Type": "text/html" };
+  let statusCode = "200";
+  let body;
+
+  try {
+    switch (event.httpMethod) {
+      case "GET":
+        return await handleGetRequest(event);
+      case "POST":
+        return await handlePostRequest(event);
+      default:
+        statusCode = "405";
+        body = "Method Not Allowed";
+    }
+  } catch (err) {
+    statusCode = "400";
+    body = "Internal Server Error";
+  }
+
+  return { statusCode, body, headers };
+};
+```
+
+### Request Handlers
+
+- Handlers receive `event` object from API Gateway
+- Return `{ statusCode, headers, body }`
+- Handle errors gracefully
+- Set appropriate Content-Type headers
+
+```javascript
+// handlers/get.mjs
+export async function handleGetRequest(event) {
+  // 1. Extract and validate input
+  const instanceID = await resolveInstanceId(event.pathParameters?.instanceID);
+  
+  // 2. Load data
+  const instance = await loadInstance(instanceID);
+  const webhook = await loadWebhook(instance.WebhookID);
+  
+  // 3. Authenticate
+  const gate = await verifyAccessOrPasswordPage(instance, webhook, event);
+  if (!gate.ok) {
+    return { /* password page */ };
+  }
+  
+  // 4. Process request
+  // 5. Return response
+  return {
+    statusCode: "200",
+    headers: { "Content-Type": "text/html" },
+    body: htmlString,
+  };
+}
+```
+
+## Service Layer Pattern
+
+### Purpose
+
+- Business logic separated from HTTP handling
+- Reusable functions for data operations
+- Clean separation of concerns
+
+### Service Functions
+
+```javascript
+// services/instance.mjs
+import { docClient, TABLES } from "../config/aws.mjs";
+import { GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+
+export async function loadInstance(instanceID) {
+  const res = await docClient.send(
+    new GetCommand({
+      TableName: TABLES.WEBHOOK_INSTANCES,
+      Key: { id: instanceID },
+    })
+  );
+  if (!res.Item) throw new Error("Instance not found");
+  return res.Item;
+}
+```
+
+### Service Layer Rules
+
+1. **One service per entity** - `instance.mjs`, `webhook.mjs`, `client.mjs`
+2. **Pure functions** - No side effects except database operations
+3. **Error handling** - Throw errors, let handlers catch them
+4. **Return entities** - Return full objects, not partial data
+5. **Use AWS SDK v3** - Always use `@aws-sdk/lib-dynamodb`
+
+## AWS SDK Usage
+
+### DynamoDB
+
+```javascript
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, UpdateCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+
+// Use docClient from config/aws.mjs
+import { docClient } from "../config/aws.mjs";
+
+// Get item
+const res = await docClient.send(
+  new GetCommand({
+    TableName: TABLES.WEBHOOK_INSTANCES,
+    Key: { id: instanceID },
+  })
+);
+
+// Query
+const res = await docClient.send(
+  new QueryCommand({
+    TableName: TABLES.WEBHOOK_INSTANCES,
+    IndexName: "byWebhookByExternalID",
+    KeyConditionExpression: "WebhookID = :webhookID",
+    ExpressionAttributeValues: {
+      ":webhookID": webhookID,
+    },
+  })
+);
+```
+
+### S3
+
+```javascript
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+
+// Use s3Client from config/aws.mjs
+import { s3Client } from "../config/aws.mjs";
+```
+
+### Secrets Manager
+
+```javascript
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+
+const secrets = new SecretsManagerClient({ region: "us-east-2" });
+const res = await secrets.send(
+  new GetSecretValueCommand({ SecretId: secretName })
+);
+```
+
+## Error Handling
+
+### Error Patterns
+
+```javascript
+// In services - throw errors
+export async function loadInstance(instanceID) {
+  const res = await docClient.send(/* ... */);
+  if (!res.Item) {
+    throw new Error("Instance not found");
+  }
+  return res.Item;
+}
+
+// In handlers - catch and return appropriate response
+try {
+  const instance = await loadInstance(instanceID);
+  // ...
+} catch (err) {
+  if (err.message === "Instance not found") {
+    return {
+      statusCode: "404",
+      headers: { "Content-Type": "text/html" },
+      body: PASSWORD_PAGE_HTML,
+    };
+  }
+  // Re-throw unexpected errors
+  throw err;
+}
+```
+
+### Error Handling Rules
+
+1. **Services throw errors** - Let handlers decide response format
+2. **Handlers catch errors** - Return appropriate HTTP responses
+3. **Don't expose internal details** - Generic error messages for users
+4. **Log errors** - Include context (instance ID, webhook ID, etc.)
+5. **Never log secrets** - Remove passwords, tokens from logs
+
+## Utility Functions
+
+### Organization
+
+- `utils/html.mjs` - HTML template manipulation
+- `utils/parser.mjs` - Form data parsing
+- `utils/s3.mjs` - S3 file operations
+
+### Utility Pattern
+
+```javascript
+// utils/html.mjs
+export function replaceHtmlVariables(htmlString, inputs) {
+  // Pure function - no side effects
+  return htmlString.replace(/{{(.*?)}}/g, (match, variable) => {
+    return inputs[variable] ?? "";
+  });
+}
+```
+
+## Authentication Utilities
+
+### Cookie Utilities
+
+```javascript
+// auth/cookie.mjs
+export const cookieNameFor = (instanceId) => `tgl_wi_auth.${instanceId}`;
+
+export function getCookieMap(cookieHeader = "") {
+  const map = {};
+  cookieHeader.split(";").forEach((pair) => {
+    // Parse cookie pairs
+  });
+  return map;
+}
+```
+
+### Token Utilities
+
+```javascript
+// helperToken/token.mjs
+export function createJwtHs256({ key, payload, ttlSec, iss, aud, iat }) {
+  // Create JWT token
+}
+
+export function verifyJwtHs256({ token, key, iss, aud, now, clockSkewSec }) {
+  // Verify JWT token
+  return { ok: true, payload: {...} };
+}
+```
+
+## Constants and Configuration
+
+### Constants
+
+```javascript
+// auth/cookie.mjs
+export const COOKIE_NAME = "tgl_wi_auth";
+export const COOKIE_TTL_SEC = 60 * 60 * 24 * 7; // 7 days
+
+// config/aws.mjs
+export const TABLES = {
+  WEBHOOK_INSTANCES: "WebhookInstances-...",
+  // ...
+};
+```
+
+### Configuration
+
+- Store AWS clients in `config/aws.mjs`
+- Store table names in `config/aws.mjs` (from environment variables)
+- Store S3 configuration in `config/aws.mjs`
+
+## Async/Await Pattern
+
+### Always Use Async/Await
+
+```javascript
+// Correct
+export async function loadInstance(instanceID) {
+  const res = await docClient.send(new GetCommand({...}));
+  return res.Item;
+}
+
+// Wrong - don't use promises directly
+export function loadInstance(instanceID) {
+  return docClient.send(new GetCommand({...})).then(res => res.Item);
+}
+```
+
+## Type Safety
+
+### JSDoc Comments (Optional)
+
+```javascript
+/**
+ * Loads a webhook instance from DynamoDB
+ * @param {string} instanceID - The instance ID
+ * @returns {Promise<Object>} The instance object
+ * @throws {Error} If instance not found
+ */
+export async function loadInstance(instanceID) {
+  // ...
+}
+```
+
+## Code Organization Rules
+
+1. **One function per file** - Or related functions grouped logically
+2. **Export named exports** - Use `export function` not `export default`
+3. **Import order** - AWS SDK, then local imports
+4. **File size** - Keep files under 300 lines when possible
+5. **Function length** - Keep functions under 50 lines when possible
+
+## Best Practices
+
+1. **Use ES modules** - Always `.mjs` and `import`/`export`
+2. **Separate concerns** - Handlers → Services → AWS SDK
+3. **Handle errors** - Services throw, handlers catch
+4. **Use AWS SDK v3** - Never use v2
+5. **Reuse clients** - Initialize once in `config/aws.mjs`
+6. **Pure functions** - Utilities should be pure when possible
+7. **Descriptive names** - Functions and variables should be clear
+8. **Consistent patterns** - Follow existing code patterns
+
+## Code References
+
+- Handler example: `src/index.mjs`
+- GET handler: `src/handlers/get.mjs`
+- POST handler: `src/handlers/post.mjs`
+- Service example: `src/services/instance.mjs`
+- Utility example: `src/utils/html.mjs`
+- Auth example: `src/auth/password.mjs`

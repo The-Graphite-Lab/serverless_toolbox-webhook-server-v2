@@ -1,0 +1,116 @@
+---
+description: "AWS resource configuration and naming conventions for the webhook server"
+alwaysApply: true
+---
+
+# AWS Resources Configuration
+
+## AWS Account and Region
+
+- **AWS Account ID**: `843563127054`
+- **Region**: `us-east-2` (all resources must be deployed here)
+- **Never hardcode these values** - use environment variables or serverless.yml configuration
+
+## DynamoDB Tables
+
+All DynamoDB tables are from the existing Amplify project. These table names **must not be hardcoded** - they should be retrieved from environment variables or AWS Secrets Manager.
+
+### Table Names (from existing Amplify staging environment)
+
+- **WebhookInstances**: `WebhookInstances-bm44urfj6bcajm63ohamnsj4au-staging`
+- **WebhookInstanceEvents**: `WebhookInstanceEvents-bm44urfj6bcajm63ohamnsj4au-staging`
+- **Webhooks**: `Webhooks-bm44urfj6bcajm63ohamnsj4au-staging`
+- **Subscriptions**: `Toolbox_Webhook_Subscriptions`
+- **Clients**: `Clients-bm44urfj6bcajm63ohamnsj4au-staging`
+
+### DynamoDB Indexes
+
+- **byWebhookByExternalID**: GSI on WebhookInstances table
+  - Partition key: `WebhookID`
+  - Sort key: `externalID`
+- **byWebhookInstance**: GSI on WebhookInstanceEvents table
+  - Partition key: `WebhookInstanceID`
+
+### Rules
+
+- Use `docClient` from `config/aws.mjs` for all DynamoDB operations
+- Use AWS SDK v3 (`@aws-sdk/lib-dynamodb`) - never use v2
+- Always handle `Item not found` cases gracefully
+- Table names should come from environment variables in serverless.yml, not hardcoded
+
+## S3 Configuration
+
+- **Bucket**: `tgltoolboxuserfiles210135-staging`
+- **File Prefix**: `public/clientWebhookInstanceFiles`
+- **Presigned URL Expiry**: 10800 seconds (3 hours) for user files
+- **Logo URL Expiry**: 86400 seconds (24 hours) for client logos
+
+### S3 Rules
+
+- Use `s3Client` from `config/aws.mjs` for all S3 operations
+- Generate presigned URLs for file access - never expose direct S3 paths
+- File paths follow pattern: `{FILE_PREFIX}/{instanceID}/{filename}`
+- Logo paths follow pattern: `public/{client.logo}`
+
+## Cognito User Pool
+
+- **ARN**: `arn:aws:cognito-idp:us-east-2:843563127054:userpool/us-east-2_QUpKtOof0`
+- **User Pool ID**: `us-east-2_QUpKtOof0`
+- **Region**: `us-east-2`
+
+### Cognito Usage
+
+- Used for new `authenticationType: "user"` webhook instances
+- Must validate Cognito tokens when `authenticationType === "user"`
+- Token validation should happen before instance access is granted
+
+## AWS Secrets Manager
+
+- **Region**: `us-east-2`
+- **Secret Naming Pattern**: `Client_{clientId}_EncodingSecret`
+- **Secret Format**: JSON with `{ "value": "<secret-string>" }`
+
+### Secrets Manager Rules
+
+- **NEVER** use local environment variables for secrets
+- **NEVER** hardcode secrets in code
+- All secrets must be stored in AWS Secrets Manager in `us-east-2`
+- Use `SecretsManagerClient` from `@aws-sdk/client-secrets-manager`
+- Always handle secret retrieval failures gracefully
+
+### Current Secrets
+
+- Client encoding secrets are stored per-client in Secrets Manager
+- Format: `Client_{ClientID}_EncodingSecret`
+- Used for JWT signing and cookie authentication
+
+## AWS Service Clients
+
+All AWS clients should be initialized in `config/aws.mjs`:
+
+```javascript
+// Use AWS SDK v3
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { S3Client } from "@aws-sdk/client-s3";
+import { SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+
+// Always use us-east-2 region
+const region = "us-east-2";
+```
+
+## Multi-Tenancy
+
+- Multi-tenancy is defined by the `ClientID` entity
+- All resources (webhooks, instances, clients) are scoped by `ClientID`
+- Client secrets are stored per-client in Secrets Manager
+- Client data includes branding (logo, colors), address, contact info
+
+## Best Practices
+
+1. **Never hardcode table names** - use environment variables from serverless.yml
+2. **Never use local env vars for secrets** - always use AWS Secrets Manager
+3. **Always use us-east-2** for all AWS resources
+4. **Handle errors gracefully** - DynamoDB/S3/Secrets Manager calls can fail
+5. **Use AWS SDK v3** - never use v2
+6. **Reuse client instances** - initialize once in config/aws.mjs

@@ -1,0 +1,412 @@
+---
+description: "Serverless Framework configuration and deployment guidelines"
+alwaysApply: true
+---
+
+# Serverless Framework Configuration
+
+## Overview
+
+This project uses the Serverless Framework to deploy a Lambda function with API Gateway. The deployment is separate from the existing Amplify infrastructure but must interact with the same AWS resources.
+
+## Project Structure
+
+```
+serverless-webhook-server/
+├── serverless.yml          # Serverless configuration
+├── handler.mjs             # Lambda entry point (or index.mjs)
+├── package.json            # Node.js dependencies
+├── config/                 # AWS configuration
+├── handlers/               # Request handlers (GET, POST)
+├── services/               # Business logic layer
+├── auth/                   # Authentication logic
+├── utils/                  # Utility functions
+└── .cursor/rules/          # Cursor rules
+```
+
+## Serverless.yml Structure
+
+### Basic Configuration
+
+```yaml
+service: toolbox-webhook-server-v2
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: us-east-2
+  stage: ${opt:stage, 'dev'}
+  accountId: 843563127054
+  memorySize: 512
+  timeout: 30
+```
+
+### Environment Variables
+
+**NEVER use local environment variables for secrets.** All secrets must come from AWS Secrets Manager.
+
+Use environment variables for:
+- DynamoDB table names (from Amplify stack)
+- S3 bucket names
+- Cognito User Pool ID
+- Stage-specific configuration
+
+```yaml
+provider:
+  environment:
+    STAGE: ${self:provider.stage}
+    REGION: us-east-2
+    WEBHOOK_INSTANCES_TABLE: ${ssm:/amplify/${self:provider.stage}/WebhookInstancesTable}
+    WEBHOOK_INSTANCE_EVENTS_TABLE: ${ssm:/amplify/${self:provider.stage}/WebhookInstanceEventsTable}
+    WEBHOOKS_TABLE: ${ssm:/amplify/${self:provider.stage}/WebhooksTable}
+    SUBSCRIPTIONS_TABLE: ${ssm:/amplify/${self:provider.stage}/SubscriptionsTable}
+    CLIENTS_TABLE: ${ssm:/amplify/${self:provider.stage}/ClientsTable}
+    S3_BUCKET: ${ssm:/amplify/${self:provider.stage}/S3Bucket}
+    COGNITO_USER_POOL_ID: us-east-2_QUpKtOof0
+```
+
+### IAM Permissions
+
+The Lambda function needs permissions for:
+
+1. **DynamoDB**: Read/Write access to all tables
+2. **S3**: Read/Write access to user files bucket
+3. **Secrets Manager**: Read access to client secrets
+4. **CloudWatch Logs**: Write access for logging
+
+```yaml
+provider:
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:Scan
+          Resource:
+            - arn:aws:dynamodb:us-east-2:843563127054:table/WebhookInstances-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/WebhookInstanceEvents-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Webhooks-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Toolbox_Webhook_Subscriptions
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Clients-*
+        - Effect: Allow
+          Action:
+            - dynamodb:Query
+          Resource:
+            - arn:aws:dynamodb:us-east-2:843563127054:table/*/index/*
+        - Effect: Allow
+          Action:
+            - s3:GetObject
+            - s3:PutObject
+            - s3:DeleteObject
+          Resource:
+            - arn:aws:s3:::tgltoolboxuserfiles210135-staging/public/*
+        - Effect: Allow
+          Action:
+            - secretsmanager:GetSecretValue
+          Resource:
+            - arn:aws:secretsmanager:us-east-2:843563127054:secret:Client_*
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: arn:aws:logs:us-east-2:843563127054:*
+```
+
+### Lambda Function Configuration
+
+```yaml
+functions:
+  webhookServer:
+    handler: index.handler
+    description: Webhook server Lambda function for serving HTML templates
+    events:
+      - http:
+          path: /{proxy+}
+          method: ANY
+          cors:
+            origin: '*'
+            headers:
+              - Content-Type
+              - Authorization
+              - Cookie
+            allowCredentials: true
+```
+
+### API Gateway Configuration
+
+```yaml
+provider:
+  httpApi:
+    id: ${ssm:/amplify/${self:provider.stage}/ApiGatewayId}
+    # OR create new API Gateway
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+        - Cookie
+      allowedMethods:
+        - GET
+        - POST
+        - OPTIONS
+      allowCredentials: true
+```
+
+### Custom Domain Configuration
+
+After deployment, configure DNS:
+
+```yaml
+plugins:
+  - serverless-domain-manager
+
+custom:
+  customDomain:
+    domainName: web.thegraphitelab.com
+    basePath: ''
+    stage: ${self:provider.stage}
+    createRoute53Record: true
+    certificateName: '*.thegraphitelab.com'
+```
+
+## Deployment Process
+
+### Initial Deployment
+
+1. Install dependencies: `npm install`
+2. Configure AWS credentials: `aws configure` or use IAM role
+3. Deploy to dev: `serverless deploy --stage dev`
+4. Test endpoints: `curl https://<api-id>.execute-api.us-east-2.amazonaws.com/dev/...`
+5. Deploy to prod: `serverless deploy --stage prod`
+6. Update DNS: Point `web.thegraphitelab.com` to new API Gateway
+
+### Deployment Commands
+
+```bash
+# Deploy to dev
+serverless deploy --stage dev
+
+# Deploy to prod
+serverless deploy --stage prod
+
+# Deploy function only (faster)
+serverless deploy function -f webhookServer --stage prod
+
+# View logs
+serverless logs -f webhookServer --stage prod --tail
+
+# Invoke function locally
+serverless invoke local -f webhookServer --stage dev --path event.json
+```
+
+### Environment-Specific Configuration
+
+Use stage-specific configuration:
+
+```yaml
+custom:
+  stages:
+    dev:
+      tablePrefix: staging
+    prod:
+      tablePrefix: prod
+```
+
+## Package Configuration
+
+### package.json
+
+```json
+{
+  "name": "toolbox-webhook-server-v2",
+  "version": "2.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.x.x",
+    "@aws-sdk/lib-dynamodb": "^3.x.x",
+    "@aws-sdk/client-s3": "^3.x.x",
+    "@aws-sdk/client-secrets-manager": "^3.x.x",
+    "@aws-sdk/client-cognito-idp": "^3.x.x",
+    "uuid": "^9.0.1"
+  }
+}
+```
+
+### Exclude Files from Package
+
+```yaml
+package:
+  exclude:
+    - node_modules/**
+    - .git/**
+    - .cursor/**
+    - '*.md'
+    - '*.plan.md'
+    - test/**
+    - examples/**
+  patterns:
+    - '!node_modules/**'
+    - '!config/**'
+    - '!handlers/**'
+    - '!services/**'
+    - '!auth/**'
+    - '!utils/**'
+```
+
+## Secrets Management
+
+### Accessing Secrets
+
+Never hardcode secrets. Use AWS Secrets Manager:
+
+```javascript
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+
+const secrets = new SecretsManagerClient({ region: "us-east-2" });
+
+export async function getClientSecret(clientId) {
+  const name = `Client_${clientId}_EncodingSecret`;
+  const res = await secrets.send(new GetSecretValueCommand({ SecretId: name }));
+  const parsed = JSON.parse(res.SecretString || "{}");
+  return parsed.value;
+}
+```
+
+### IAM Permissions for Secrets
+
+The Lambda execution role must have `secretsmanager:GetSecretValue` permission for:
+- Pattern: `Client_*_EncodingSecret`
+- Region: `us-east-2`
+
+## Monitoring and Logging
+
+### CloudWatch Logs
+
+- Log group: `/aws/lambda/toolbox-webhook-server-v2-{stage}-webhookServer`
+- Retention: 7 days (configurable)
+- Log level: INFO for normal operations, ERROR for failures
+
+### CloudWatch Metrics
+
+- Invocations
+- Errors
+- Duration
+- Throttles
+
+### Logging Best Practices
+
+- Use structured logging (JSON)
+- Never log passwords, tokens, or sensitive data
+- Include request ID, instance ID, webhook ID in logs
+- Log authentication failures (without sensitive details)
+
+## Testing Locally
+
+### Serverless Offline
+
+```bash
+# Install plugin
+npm install --save-dev serverless-offline
+
+# Run locally
+serverless offline --stage dev
+```
+
+### Local Testing Configuration
+
+```yaml
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+    lambdaPort: 3002
+```
+
+## Versioning and Rollback
+
+### Versioning Strategy
+
+- Use semantic versioning: `v2.0.0`
+- Tag releases in Git
+- Deploy to dev first, then prod
+
+### Rollback Procedure
+
+1. Identify problematic deployment version
+2. Revert code changes
+3. Redeploy: `serverless deploy --stage prod`
+4. Or use AWS Console to rollback Lambda function version
+
+## DNS Configuration
+
+### Domain Setup
+
+After deployment:
+
+1. Get API Gateway domain name from deployment output
+2. Create CNAME record: `web.thegraphitelab.com` → `<api-id>.execute-api.us-east-2.amazonaws.com`
+3. Or use API Gateway Custom Domain feature
+4. Wait for DNS propagation (5-60 minutes)
+
+### Current Domain
+
+- **Old domain**: `webhooks.thegraphitelab.com` (Amplify)
+- **New domain**: `web.thegraphitelab.com` (Serverless Framework)
+
+## Best Practices
+
+1. **Never hardcode table names** - Use environment variables or SSM parameters
+2. **Never use local env vars for secrets** - Always use Secrets Manager
+3. **Test in dev first** - Always deploy to dev before prod
+4. **Monitor CloudWatch Logs** - Check logs after deployment
+5. **Use IAM least privilege** - Only grant necessary permissions
+6. **Version your deployments** - Use Git tags
+7. **Document changes** - Update this file when configuration changes
+
+## Migration from Amplify
+
+### Key Differences
+
+- **Deployment**: Serverless Framework vs Amplify CLI
+- **Configuration**: serverless.yml vs amplify.yml
+- **Lambda**: Separate function vs Amplify function
+- **API Gateway**: Separate API vs Amplify API
+
+### Compatibility Requirements
+
+- Must use same DynamoDB tables
+- Must use same S3 bucket
+- Must use same Cognito User Pool
+- Must maintain API compatibility
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission Denied**: Check IAM role permissions
+2. **Table Not Found**: Verify table names in environment variables
+3. **Secret Access Denied**: Check Secrets Manager permissions
+4. **CORS Errors**: Verify CORS configuration in API Gateway
+5. **Timeout**: Increase Lambda timeout in serverless.yml
+
+### Debug Commands
+
+```bash
+# Check function logs
+serverless logs -f webhookServer --stage prod --tail
+
+# Invoke function with test event
+serverless invoke -f webhookServer --stage prod --path test-event.json
+
+# Check API Gateway logs
+aws apigatewayv2 get-apis --region us-east-2
+```
