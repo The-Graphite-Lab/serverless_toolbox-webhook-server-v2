@@ -1,6 +1,6 @@
 service: toolbox-webhook-server-v2
 
-frameworkVersion: '3'
+frameworkVersion: "3"
 
 provider:
   name: aws
@@ -12,7 +12,7 @@ provider:
   httpApi:
     cors:
       allowedOrigins:
-        - '*'
+        - "*"
       allowedHeaders:
         - Content-Type
         - Authorization
@@ -34,6 +34,7 @@ provider:
     WEBHOOKS_TABLE: Webhooks-bm44urfj6bcajm63ohamnsj4au-staging
     SUBSCRIPTIONS_TABLE: Toolbox_Webhook_Subscriptions
     CLIENTS_TABLE: Clients-bm44urfj6bcajm63ohamnsj4au-staging
+    USERS_TABLE: Users-bm44urfj6bcajm63ohamnsj4au-staging
     # S3 Configuration
     S3_BUCKET: tgltoolboxuserfiles210135-staging
     S3_FILE_PREFIX: public/clientWebhookInstanceFiles
@@ -41,6 +42,7 @@ provider:
     # Cognito Configuration
     COGNITO_USER_POOL_ID: us-east-2_QUpKtOof0
     COGNITO_USER_POOL_ARN: arn:aws:cognito-idp:us-east-2:843563127054:userpool/us-east-2_QUpKtOof0
+    COGNITO_CLIENT_ID: "43koqqemahvu39689hj19vvpdk"
   iam:
     role:
       statements:
@@ -58,6 +60,7 @@ provider:
             - arn:aws:dynamodb:us-east-2:843563127054:table/Webhooks-*
             - arn:aws:dynamodb:us-east-2:843563127054:table/Toolbox_Webhook_Subscriptions
             - arn:aws:dynamodb:us-east-2:843563127054:table/Clients-*
+            - arn:aws:dynamodb:us-east-2:843563127054:table/Users-*
         # DynamoDB Index Permissions
         - Effect: Allow
           Action:
@@ -84,6 +87,13 @@ provider:
             - secretsmanager:GetSecretValue
           Resource:
             - arn:aws:secretsmanager:us-east-2:843563127054:secret:Client_*
+        # Cognito Permissions
+        - Effect: Allow
+          Action:
+            - cognito-idp:InitiateAuth
+            - cognito-idp:RespondToAuthChallenge
+          Resource:
+            - arn:aws:cognito-idp:us-east-2:843563127054:userpool/us-east-2_QUpKtOof0
         # CloudWatch Logs Permissions
         - Effect: Allow
           Action:
@@ -105,17 +115,18 @@ functions:
           method: ANY
 
 package:
+  excludeDevDependencies: true
   patterns:
-    - '!.git/**'
-    - '!.cursor/**'
-    - '!*.md'
-    - '!*.plan.md'
-    - '!test/**'
-    - '!examples/**'
-    - '!docs/**'
-    - '!src/docs/**'
-    - '!src/examples/**'
-    - 'src/**'
+    - "!.git/**"
+    - "!.cursor/**"
+    - "!*.md"
+    - "!*.plan.md"
+    - "!test/**"
+    - "!examples/**"
+    - "!docs/**"
+    - "!src/docs/**"
+    - "!src/examples/**"
+    - "src/**"
 
 plugins:
   - serverless-offline
@@ -125,4 +136,3 @@ custom:
     httpPort: 3000
     lambdaPort: 3002
     noPrependStageInUrl: true
-

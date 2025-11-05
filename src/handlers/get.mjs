@@ -19,8 +19,12 @@ import {
 import { getSignedUrlsForFiles } from "../utils/s3.mjs";
 import {
   buildAuthCookie,
+  buildCognitoCookie,
   cookieNameFor,
   COOKIE_TTL_SEC,
+  COGNITO_ID_TOKEN_COOKIE,
+  COGNITO_REFRESH_TOKEN_COOKIE,
+  COGNITO_COOKIE_TTL_SEC,
 } from "../auth/cookie.mjs";
 import {
   createJwtHs256,
@@ -35,37 +39,32 @@ export async function handleGetRequest(event) {
   // Allow if no Accept header (browser direct navigation), includes text/html, or accepts all
   const accept = event?.headers?.accept || event?.headers?.Accept || "";
   const acceptLower = accept.toLowerCase();
-  
+
   // Only reject if Accept header explicitly requests JSON only (no HTML, no wildcard)
   // This allows:
   // - No Accept header (browser direct navigation)
   // - Accept: text/html (browser HTML request)
   // - Accept: */* (browser accepts all)
   // - Accept: text/html,application/xhtml+xml (browser HTML variants)
-  if (accept && 
-      acceptLower.includes("application/json") && 
-      !acceptLower.includes("text/html") && 
-      !acceptLower.includes("*/*")) {
+  if (
+    accept &&
+    acceptLower.includes("application/json") &&
+    !acceptLower.includes("text/html") &&
+    !acceptLower.includes("*/*")
+  ) {
     throw new Error("webpage not accessible");
   }
 
   let greedy = event.pathParameters?.instanceID;
-  console.log("=== GET HANDLER DEBUG ===");
-  console.log("Raw greedy from pathParameters:", greedy);
-  console.log("Full pathParameters:", JSON.stringify(event.pathParameters));
-  
+
   if (typeof greedy === "string") {
     try {
       greedy = decodeURIComponent(greedy);
-      console.log("Decoded greedy:", greedy);
     } catch {}
   }
   const instanceID = await resolveInstanceId(greedy);
-  console.log("Resolved instanceID:", instanceID);
   const instance = await loadInstance(instanceID);
-  console.log("Instance loaded:", instance?.id);
   const webhook = await loadWebhook(instance.WebhookID);
-  console.log("Webhook loaded:", webhook?.id);
 
   // Load client data if available
   const client = await loadClient(webhook.ClientID);
@@ -76,33 +75,53 @@ export async function handleGetRequest(event) {
     return {
       statusCode: "200",
       headers: { "Content-Type": "text/html" },
-      body: PASSWORD_PAGE_HTML,
+      body: gate.html || PASSWORD_PAGE_HTML,
     };
   }
 
-  // NEW: Mint/refresh robust session cookie for this instance
+  // Set cookies based on authentication type
   let headers = { "Content-Type": "text/html" };
-  try {
-    const clientSecret = await getClientSecret(webhook.ClientID);
-    const cookieKey = deriveCookieSigningKey(clientSecret, instance.id);
-    const jwtCookie = createJwtHs256({
-      key: cookieKey,
-      payload: { iid: instance.id, tv: instance.tokenVersion >>> 0 },
-      ttlSec: COOKIE_TTL_SEC,
-      iss: "tgl",
-      aud: `wi:${instance.id}`,
-      iat: nowSec(),
-    });
-    const setCookie = buildAuthCookie({
-      name: cookieNameFor(instance.id),
-      token: jwtCookie,
-      maxAgeSec: COOKIE_TTL_SEC,
-      path: "/instance/",
-    });
-    headers = { ...headers, "Set-Cookie": setCookie };
-  } catch (e) {
-    // cookie mint (GET) failed
-    // Do not break the page; gating already passed
+
+  // If Cognito tokens were refreshed, set them in cookies
+  // API Gateway v2: cookies should be returned as an array
+  let responseCookies = undefined;
+  if (gate.cognitoTokens) {
+    responseCookies = [
+      buildCognitoCookie({
+        name: COGNITO_ID_TOKEN_COOKIE,
+        token: gate.cognitoTokens.idToken,
+        maxAgeSec: COGNITO_COOKIE_TTL_SEC,
+      }),
+      buildCognitoCookie({
+        name: COGNITO_REFRESH_TOKEN_COOKIE,
+        token: gate.cognitoTokens.refreshToken,
+        maxAgeSec: COGNITO_COOKIE_TTL_SEC,
+      }),
+    ];
+  } else if (webhook?.authenticationType !== "user") {
+    // Legacy password auth - mint/refresh session cookie for this instance
+    try {
+      const clientSecret = await getClientSecret(webhook.ClientID);
+      const cookieKey = deriveCookieSigningKey(clientSecret, instance.id);
+      const jwtCookie = createJwtHs256({
+        key: cookieKey,
+        payload: { iid: instance.id, tv: instance.tokenVersion >>> 0 },
+        ttlSec: COOKIE_TTL_SEC,
+        iss: "tgl",
+        aud: `wi:${instance.id}`,
+        iat: nowSec(),
+      });
+      const setCookie = buildAuthCookie({
+        name: cookieNameFor(instance.id),
+        token: jwtCookie,
+        maxAgeSec: COOKIE_TTL_SEC,
+        path: "/instance/",
+      });
+      headers = { ...headers, "Set-Cookie": setCookie };
+    } catch (e) {
+      // cookie mint (GET) failed
+      // Do not break the page; gating already passed
+    }
   }
 
   await updateWebhookInstance(instanceID);
@@ -143,6 +162,7 @@ export async function handleGetRequest(event) {
   return {
     statusCode: "200",
     headers,
+    cookies: responseCookies,
     body,
   };
 }

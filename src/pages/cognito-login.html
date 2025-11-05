@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign In</title>
+    <style>
+      :root {
+        --bg: #f6f3ee; /* matches Toolbox background */
+        --card: #ffffff;
+        --line: #dde7f2; /* subtle blue border */
+        --text: #2f3a46;
+        --muted: #6e7a88;
+        --accent: #ffb500;
+        --radius: 10px;
+        --shadow: 0 8px 20px rgba(16, 24, 40, 0.06);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+          Arial;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+      }
+
+      .card {
+        width: min(360px, 90vw);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 20px;
+      }
+
+      form {
+        margin: 0;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+      label + label {
+        margin-top: 16px;
+      }
+      input {
+        width: 100%;
+        height: 42px;
+        border: 1px solid #cfd8e3;
+        border-radius: var(--radius);
+        padding: 0 10px;
+        font-size: 1rem;
+      }
+      input:focus {
+        border-color: var(--accent);
+        outline: none;
+        box-shadow: 0 0 0 2px rgba(255, 181, 0, 0.25);
+      }
+
+      .btn {
+        width: 100%;
+        height: 42px;
+        margin-top: 12px;
+        border: none;
+        border-radius: var(--radius);
+        background: var(--accent);
+        color: #14181c;
+        font-weight: 600;
+        cursor: pointer;
+        transition: filter 0.1s ease;
+      }
+      .btn:hover {
+        filter: brightness(1.05);
+      }
+      .btn[disabled] {
+        opacity: 0.7;
+        cursor: default;
+      }
+
+      /* Toasts */
+      .toast-host {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 1000;
+      }
+      .toast {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-left: 4px solid var(--accent);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 10px 12px;
+        min-width: 220px;
+        max-width: 320px;
+        font-size: 0.9rem;
+        color: var(--text);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .toast.error {
+        border-left-color: #d92d20;
+      }
+      .toast.success {
+        border-left-color: #16a34a;
+      }
+      .toast button {
+        background: none;
+        border: none;
+        cursor: pointer;
+        font-size: 16px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <form id="auth-form">
+        <label for="username">Username</label>
+        <input
+          id="username"
+          type="text"
+          placeholder="Enter username"
+          required
+          autocomplete="username"
+        />
+        <label for="password">Password</label>
+        <input
+          id="password"
+          type="password"
+          placeholder="Enter password"
+          required
+          autocomplete="current-password"
+        />
+        <button id="submitBtn" type="submit" class="btn">Sign In</button>
+      </form>
+    </div>
+
+    <div id="toastHost" class="toast-host"></div>
+
+    <script>
+      const form = document.getElementById("auth-form");
+      const usernameInput = document.getElementById("username");
+      const passwordInput = document.getElementById("password");
+      const btn = document.getElementById("submitBtn");
+      const host = document.getElementById("toastHost");
+
+      function showToast(msg, type = "info", timeout = 3000) {
+        const el = document.createElement("div");
+        el.className = `toast ${type}`;
+        el.innerHTML = `<span>${msg}</span><button aria-label="Dismiss">&times;</button>`;
+        host.appendChild(el);
+        const remove = () => el.remove();
+        el.querySelector("button").addEventListener("click", remove);
+        setTimeout(remove, timeout);
+      }
+
+      function setLoading(v) {
+        btn.disabled = v;
+        btn.textContent = v ? "Signing in…" : "Sign In";
+      }
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+
+        if (!username) {
+          showToast("Please enter your username.", "error");
+          usernameInput.focus();
+          return;
+        }
+        if (!password) {
+          showToast("Please enter your password.", "error");
+          passwordInput.focus();
+          return;
+        }
+
+        setLoading(true);
+        try {
+          const res = await fetch(window.location.pathname + "/auth", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+          });
+
+          // Be robust to empty/non-JSON bodies
+          let data = null;
+          const text = await res.text();
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {}
+
+          if (res.ok) {
+            // Cookie is set by the response; just reload same path so the cookie is sent.
+            showToast("Signed in successfully. Redirecting…", "success", 800);
+            // tiny delay so the cookie commit isn't interrupted by immediate navigation
+            setTimeout(() => {
+              window.location.href = window.location.pathname;
+            }, 50);
+          } else {
+            const msg = data?.error || "Invalid username or password.";
+            showToast(msg, "error");
+            passwordInput.select();
+          }
+        } catch {
+          showToast("Network error. Try again.", "error");
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      usernameInput.focus();
+    </script>
+  </body>
+</html>

@@ -16,9 +16,14 @@ import { uploadFileToS3, generatePresignedUrl } from "../utils/s3.mjs";
 import { S3_CONFIG } from "../config/aws.mjs";
 import {
   buildAuthCookie,
+  buildCognitoCookie,
   cookieNameFor,
   COOKIE_TTL_SEC,
+  COGNITO_ID_TOKEN_COOKIE,
+  COGNITO_REFRESH_TOKEN_COOKIE,
+  COGNITO_COOKIE_TTL_SEC,
 } from "../auth/cookie.mjs";
+import { authenticateUser } from "../auth/cognito.mjs";
 import {
   createJwtHs256,
   deriveCookieSigningKey,
@@ -55,58 +60,116 @@ export async function handlePostRequest(event) {
   const webhook = await loadWebhook(instance.WebhookID);
 
   // Handle authentication exchange
-  if (isAuthExchange && webhook.passwordProtected) {
+  if (isAuthExchange) {
     const payload = event.body ? JSON.parse(event.body) : {};
-    const provided = payload?.password || "";
-    const expected = instance?.password || "";
 
-    if (!provided || provided !== expected) {
+    // Cognito authentication
+    if (webhook?.authenticationType === "user") {
+      const username = payload?.username || "";
+      const password = payload?.password || "";
+
+      if (!username || !password) {
+        return {
+          statusCode: "401",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ok: false,
+            error: "Username and password required",
+          }),
+        };
+      }
+
+      const authResult = await authenticateUser(username, password);
+
+      if (!authResult.ok) {
+        return {
+          statusCode: "401",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ok: false,
+            error: authResult.error || "Authentication failed",
+          }),
+        };
+      }
+
+      // Set Cognito cookies
+      // API Gateway v2: cookies should be returned as an array in the response
+      const cookies = [
+        buildCognitoCookie({
+          name: COGNITO_ID_TOKEN_COOKIE,
+          token: authResult.tokens.idToken,
+          maxAgeSec: COGNITO_COOKIE_TTL_SEC,
+        }),
+        buildCognitoCookie({
+          name: COGNITO_REFRESH_TOKEN_COOKIE,
+          token: authResult.tokens.refreshToken,
+          maxAgeSec: COGNITO_COOKIE_TTL_SEC,
+        }),
+      ];
+
       return {
-        statusCode: "401",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ok: false, error: "Invalid password" }),
+        statusCode: "200",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cookies: cookies, // API Gateway v2 uses cookies array
+        body: JSON.stringify({ ok: true }),
       };
     }
 
-    // Derive cookie key (NO authKey required)
-    const clientSecret = await getClientSecret(webhook.ClientID);
-    const cookieKey = deriveCookieSigningKey(clientSecret, instance.id);
+    // Legacy password authentication
+    if (webhook.passwordProtected) {
+      const provided = payload?.password || "";
+      const expected = instance?.password || "";
 
-    // Issue JWT cookie bound to instance
-    const jwtCookie = createJwtHs256({
-      key: cookieKey,
-      payload: { iid: instance.id, tv: instance.tokenVersion >>> 0 },
-      ttlSec: COOKIE_TTL_SEC,
-      iss: "tgl",
-      aud: `wi:${instance.id}`,
-      iat: nowSec(),
-    });
+      if (!provided || provided !== expected) {
+        return {
+          statusCode: "401",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ok: false, error: "Invalid password" }),
+        };
+      }
 
-    const setCookie = buildAuthCookie({
-      name: cookieNameFor(instance.id),
-      token: jwtCookie,
-      maxAgeSec: COOKIE_TTL_SEC,
-      path: "/instance/",
-    });
+      // Derive cookie key (NO authKey required)
+      const clientSecret = await getClientSecret(webhook.ClientID);
+      const cookieKey = deriveCookieSigningKey(clientSecret, instance.id);
 
-    return {
-      statusCode: "200",
-      headers: {
-        "Content-Type": "application/json",
-        "Set-Cookie": setCookie,
-      },
-      body: JSON.stringify({ ok: true }),
-    };
+      // Issue JWT cookie bound to instance
+      const jwtCookie = createJwtHs256({
+        key: cookieKey,
+        payload: { iid: instance.id, tv: instance.tokenVersion >>> 0 },
+        ttlSec: COOKIE_TTL_SEC,
+        iss: "tgl",
+        aud: `wi:${instance.id}`,
+        iat: nowSec(),
+      });
+
+      const setCookie = buildAuthCookie({
+        name: cookieNameFor(instance.id),
+        token: jwtCookie,
+        maxAgeSec: COOKIE_TTL_SEC,
+        path: "/instance/",
+      });
+
+      return {
+        statusCode: "200",
+        headers: {
+          "Content-Type": "application/json",
+          "Set-Cookie": setCookie,
+        },
+        body: JSON.stringify({ ok: true }),
+      };
+    }
   }
 
-  // Normal submit (auth enforced if protected)
-  if (webhook.passwordProtected) {
+  // Normal submit (auth enforced if protected or Cognito auth required)
+  if (webhook.passwordProtected || webhook?.authenticationType === "user") {
     const gate = await verifyAccessOrPasswordPage(instance, webhook, event);
     if (!gate.ok) {
       return {
         statusCode: "401",
         headers: { "Content-Type": "text/html" },
-        body: PASSWORD_PAGE_HTML,
+        body: gate.html || PASSWORD_PAGE_HTML,
       };
     }
   }

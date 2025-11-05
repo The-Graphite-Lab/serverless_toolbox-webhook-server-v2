@@ -13,21 +13,67 @@ import {
 } from "../helperToken/token.mjs";
 import { getClientSecret } from "../helperToken/clientSecret.mjs";
 import { getCookieMap, cookieNameFor } from "./cookie.mjs";
+import { verifyCognitoAuthAndAuthorization } from "./cognito.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const PASSWORD_PAGE_HTML = readFileSync(
   join(__dirname, "../pages/password.html"),
   "utf8"
 );
+export const COGNITO_LOGIN_PAGE_HTML = readFileSync(
+  join(__dirname, "../pages/cognito-login.html"),
+  "utf8"
+);
+export const ACCESS_DENIED_PAGE_HTML = readFileSync(
+  join(__dirname, "../pages/access-denied.html"),
+  "utf8"
+);
 
 // Verify access via query token or JWT cookie, or return password page
 export async function verifyAccessOrPasswordPage(instance, webhook, event) {
+  // NEW: Check for Cognito user authentication first
+  if (webhook?.authenticationType === "user") {
+    const cognitoResult = await verifyCognitoAuthAndAuthorization(
+      event,
+      instance,
+      webhook
+    );
+
+    if (cognitoResult.authenticated && cognitoResult.authorized) {
+      // User is authenticated and authorized - return success with tokens if refreshed
+      return {
+        ok: true,
+        cognitoTokens: cognitoResult.tokens,
+        user: cognitoResult.user,
+      };
+    }
+
+    if (cognitoResult.authenticated && !cognitoResult.authorized) {
+      // User is authenticated but not authorized - show access denied page
+      return {
+        ok: false,
+        html: ACCESS_DENIED_PAGE_HTML,
+        reason: "unauthorized",
+      };
+    }
+
+    // Not authenticated - show Cognito login page
+    return {
+      ok: false,
+      html: COGNITO_LOGIN_PAGE_HTML,
+      reason: "not_authenticated",
+    };
+  }
+
+  // Legacy password protection flow
   if (!webhook?.passwordProtected) return { ok: true };
 
   const qsToken = event.queryStringParameters?.token;
-  const cookieMap = getCookieMap(
-    event.headers?.cookie || event.headers?.Cookie
-  );
+  // API Gateway v2 sends cookies as an array in event.cookies
+  const cookieSource = event.cookies
+    ? event.cookies.join("; ")
+    : event.headers?.cookie || event.headers?.Cookie || "";
+  const cookieMap = getCookieMap(cookieSource);
   const cookieToken = cookieMap?.[cookieNameFor(instance.id)];
 
   // 1) If qs token present AND instance.authKey exists, try compact verify (legacy)

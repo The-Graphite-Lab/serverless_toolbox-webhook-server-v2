@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Access Denied</title>
+    <style>
+      :root {
+        --bg: #f6f3ee; /* matches Toolbox background */
+        --card: #ffffff;
+        --line: #dde7f2; /* subtle blue border */
+        --text: #2f3a46;
+        --muted: #6e7a88;
+        --accent: #ffb500;
+        --error: #d92d20;
+        --radius: 10px;
+        --shadow: 0 8px 20px rgba(16, 24, 40, 0.06);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+          Arial;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+      }
+
+      .card {
+        width: min(400px, 90vw);
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        padding: 32px 24px;
+        text-align: center;
+      }
+
+      .icon {
+        font-size: 48px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0 0 12px 0;
+        font-size: 1.5rem;
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      p {
+        margin: 0 0 24px 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+        line-height: 1.5;
+      }
+
+      .btn {
+        width: 100%;
+        height: 42px;
+        border: none;
+        border-radius: var(--radius);
+        background: var(--accent);
+        color: #14181c;
+        font-weight: 600;
+        cursor: pointer;
+        transition: filter 0.1s ease;
+        font-size: 0.95rem;
+      }
+      .btn:hover {
+        filter: brightness(1.05);
+      }
+      .btn-secondary {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        margin-top: 8px;
+      }
+      .btn-secondary:hover {
+        background: #f9fafb;
+        filter: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="icon">🔒</div>
+      <h1>Access Denied</h1>
+      <p>
+        Looks like you don't have access to this page. Please contact your
+        administrator if you believe this is an error.
+      </p>
+      <button id="logoutBtn" class="btn">Sign Out</button>
+      <button id="backBtn" class="btn btn-secondary">Go Back</button>
+    </div>
+
+    <script>
+      const logoutBtn = document.getElementById("logoutBtn");
+      const backBtn = document.getElementById("backBtn");
+
+      logoutBtn.addEventListener("click", async () => {
+        try {
+          // Call logout endpoint to clear cookies
+          await fetch("/logout", {
+            method: "POST",
+            credentials: "include",
+          });
+          // Redirect to current page (will show login page)
+          window.location.href = window.location.pathname;
+        } catch {
+          // Even if logout fails, redirect to current page
+          window.location.href = window.location.pathname;
+        }
+      });
+
+      backBtn.addEventListener("click", () => {
+        // Try to go back, or redirect to root
+        if (window.history.length > 1) {
+          window.history.back();
+        } else {
+          window.location.href = "/";
+        }
+      });
+    </script>
+  </body>
+</html>

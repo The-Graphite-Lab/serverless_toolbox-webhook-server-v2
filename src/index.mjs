@@ -4,6 +4,11 @@
 import { handleGetRequest } from "./handlers/get.mjs";
 import { handlePostRequest } from "./handlers/post.mjs";
 import { PASSWORD_PAGE_HTML } from "./auth/password.mjs";
+import {
+  buildCookieDeletionCookie,
+  COGNITO_ID_TOKEN_COOKIE,
+  COGNITO_REFRESH_TOKEN_COOKIE,
+} from "./auth/cookie.mjs";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Normalize HTTP API event to REST API format for backward compatibility
@@ -14,24 +19,27 @@ function normalizeEvent(event) {
 
   if (isHttpApi) {
     // HTTP API pathParameters uses {proxy+} key, extract it
-    let proxyPath = event.pathParameters?.proxy || event.pathParameters?.instanceID;
-    
+    let proxyPath =
+      event.pathParameters?.proxy || event.pathParameters?.instanceID;
+
     // Strip /instance/ prefix if present (common path prefix)
     if (proxyPath && proxyPath.startsWith("instance/")) {
       proxyPath = proxyPath.substring("instance/".length);
-      console.log("Stripped /instance/ prefix, proxyPath now:", proxyPath);
     }
-    
+
     // Normalize HTTP API event to REST API format
     return {
       ...event,
       httpMethod: event.requestContext.http.method,
-      path: event.rawPath || event.requestContext.http.path || event.path || "/",
+      path:
+        event.rawPath || event.requestContext.http.path || event.path || "/",
       // Normalize pathParameters - HTTP API uses 'proxy' for {proxy+}
-      pathParameters: proxyPath ? {
-        instanceID: proxyPath,
-        proxy: proxyPath, // Keep both for compatibility
-      } : event.pathParameters || {},
+      pathParameters: proxyPath
+        ? {
+            instanceID: proxyPath,
+            proxy: proxyPath, // Keep both for compatibility
+          }
+        : event.pathParameters || {},
       queryStringParameters: event.queryStringParameters || {},
       // HTTP API headers are often lowercase, normalize them
       headers: normalizeHeaders(event.headers || {}),
@@ -40,10 +48,14 @@ function normalizeEvent(event) {
       requestContext: {
         ...event.requestContext,
         identity: {
-          sourceIp: event.requestContext.http.sourceIp || event.requestContext.identity?.sourceIp || "0.0.0.0",
+          sourceIp:
+            event.requestContext.http.sourceIp ||
+            event.requestContext.identity?.sourceIp ||
+            "0.0.0.0",
         },
       },
-      rawPath: event.rawPath || event.requestContext.http.path || event.path || "/",
+      rawPath:
+        event.rawPath || event.requestContext.http.path || event.path || "/",
     };
   }
 
@@ -72,26 +84,12 @@ export const handler = async (event) => {
   let statusCode = "200";
   let body;
 
-  // Log raw event for debugging
-  console.log("=== RAW EVENT ===");
-  console.log(JSON.stringify(event, null, 2));
-
   // Normalize event format (HTTP API -> REST API)
   const normalizedEvent = normalizeEvent(event);
 
-  // Log normalized event for debugging
-  console.log("=== NORMALIZED EVENT ===");
-  console.log(JSON.stringify(normalizedEvent, null, 2));
-  console.log("=== EVENT DETAILS ===");
-  console.log("httpMethod:", normalizedEvent.httpMethod);
-  console.log("path:", normalizedEvent.path);
-  console.log("rawPath:", normalizedEvent.rawPath);
-  console.log("pathParameters:", JSON.stringify(normalizedEvent.pathParameters));
-  console.log("queryStringParameters:", JSON.stringify(normalizedEvent.queryStringParameters));
-  console.log("headers:", JSON.stringify(normalizedEvent.headers));
-
   // Get origin from request headers for CORS
-  const requestOrigin = normalizedEvent.headers?.origin || normalizedEvent.headers?.Origin || "*";
+  const requestOrigin =
+    normalizedEvent.headers?.origin || normalizedEvent.headers?.Origin || "*";
 
   try {
     switch (normalizedEvent.httpMethod) {
@@ -102,6 +100,23 @@ export const handler = async (event) => {
       }
 
       case "POST": {
+        // Handle logout endpoint
+        const path = normalizedEvent.path || normalizedEvent.rawPath || "";
+        if (path.endsWith("/logout") || path === "/logout") {
+          const cookies = [
+            buildCookieDeletionCookie(COGNITO_ID_TOKEN_COOKIE),
+            buildCookieDeletionCookie(COGNITO_REFRESH_TOKEN_COOKIE),
+          ];
+          return {
+            statusCode: "200",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            cookies: cookies, // API Gateway v2 uses cookies array
+            body: JSON.stringify({ ok: true }),
+          };
+        }
+
         const response = await handlePostRequest(normalizedEvent);
         // Add CORS headers to response
         return addCorsHeaders(response, requestOrigin);
@@ -131,11 +146,21 @@ export const handler = async (event) => {
 
 // Add CORS headers to response
 function addCorsHeaders(response, origin) {
+  // Allow both web.thegraphitelab.com and webhooks.thegraphitelab.com
+  const allowedOrigins = [
+    "https://web.thegraphitelab.com",
+    "https://webhooks.thegraphitelab.com",
+  ];
+
+  const isAllowedOrigin = origin && allowedOrigins.includes(origin);
+  const corsOrigin = isAllowedOrigin ? origin : origin === "*" ? "*" : origin;
+
   const corsHeaders = {
-    "Access-Control-Allow-Origin": origin === "*" ? "*" : origin,
+    "Access-Control-Allow-Origin": corsOrigin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, Cookie, Accept",
-    "Access-Control-Allow-Credentials": origin !== "*" ? "true" : "false",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, Cookie, Accept",
+    "Access-Control-Allow-Credentials": isAllowedOrigin ? "true" : "false",
     "Access-Control-Max-Age": "86400",
   };
 
@@ -145,5 +170,7 @@ function addCorsHeaders(response, origin) {
       ...response.headers,
       ...corsHeaders,
     },
+    // Preserve cookies array if present (API Gateway v2 format)
+    cookies: response.cookies,
   };
 }
