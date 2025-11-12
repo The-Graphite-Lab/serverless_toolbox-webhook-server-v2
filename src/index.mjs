@@ -27,6 +27,14 @@ function normalizeEvent(event) {
       proxyPath = proxyPath.substring("instance/".length);
     }
 
+    // HTTP API doesn't auto-decode base64 bodies like REST API does
+    // Decode it here to maintain compatibility
+    let body = event.body || "";
+    const isBase64Encoded = event.isBase64Encoded || false;
+    if (isBase64Encoded && body) {
+      body = Buffer.from(body, "base64").toString("utf-8");
+    }
+
     // Normalize HTTP API event to REST API format
     return {
       ...event,
@@ -43,8 +51,8 @@ function normalizeEvent(event) {
       queryStringParameters: event.queryStringParameters || {},
       // HTTP API headers are often lowercase, normalize them
       headers: normalizeHeaders(event.headers || {}),
-      body: event.body || "",
-      isBase64Encoded: event.isBase64Encoded || false,
+      body: body, // Use decoded body
+      isBase64Encoded: false, // Mark as decoded
       requestContext: {
         ...event.requestContext,
         identity: {
