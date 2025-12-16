@@ -36,3 +36,22 @@ export async function getSignedUrlsForFiles(files) {
   }
   return out;
 }
+
+/**
+ * Read a text file from S3 and return its contents as a string
+ * @param {string} bucket - S3 bucket name
+ * @param {string} key - S3 object key
+ * @returns {Promise<string>} File contents as string
+ * @throws {Error} If file cannot be read
+ */
+export async function readTextFileFromS3(bucket, key) {
+  const command = new GetObjectCommand({ Bucket: bucket, Key: key });
+  const response = await s3Client.send(command);
+  
+  // Convert stream to string
+  const chunks = [];
+  for await (const chunk of response.Body) {
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}

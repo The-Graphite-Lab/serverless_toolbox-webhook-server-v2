@@ -33,7 +33,7 @@ export function replaceHtmlVariables(htmlString, inputs) {
       const replacement = getNestedValue(inputs, varName);
       return inScript(offset) ? replacement ?? '""' : replacement ?? "";
     })
-    ?.replace(/"{4}/g, '""');
+    .replace(/"{4}/g, '""');
 }
 
 // Replace {{postEvent}} with JSON-safe content
@@ -56,6 +56,8 @@ export function buildHtmlDocument({
   instanceId,
   webhookId,
   client,
+  values,
+  postEvent,
 }) {
   const defaultFavicon =
     "https://static.wixstatic.com/media/262d77_e526592fe4ad489f8ca37e0bc2f8b53b%7Emv2.png/v1/fill/w_192%2Ch_192%2Clg_1%2Cusm_0.66_1.00_0.01/262d77_e526592fe4ad489f8ca37e0bc2f8b53b%7Emv2.png";
@@ -71,7 +73,9 @@ export function buildHtmlDocument({
       var InstanceMeta = {
         instanceId: ${JSON.stringify(instanceId)},
         webhookId: ${JSON.stringify(webhookId)},
-        client: ${JSON.stringify(client || null)}
+        client: ${JSON.stringify(client || null)},
+        data: ${JSON.stringify(values || null)},
+        lastEvent: ${JSON.stringify(postEvent || null)},
       };
       
       // Make InstanceMeta properties directly accessible

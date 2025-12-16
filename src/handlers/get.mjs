@@ -16,7 +16,7 @@ import {
   replaceHtmlWithEvent,
   buildHtmlDocument,
 } from "../utils/html.mjs";
-import { getSignedUrlsForFiles } from "../utils/s3.mjs";
+import { getSignedUrlsForFiles, readTextFileFromS3 } from "../utils/s3.mjs";
 import {
   buildAuthCookie,
   buildCognitoCookie,
@@ -135,8 +135,35 @@ export async function handleGetRequest(event) {
       postEvent.files = await getSignedUrlsForFiles(postEvent.files);
   }
 
-  let htmlString = webhook.html;
-  const cssString = webhook.style;
+  // Load HTML and CSS from S3 if usesS3 is true, otherwise use DynamoDB values
+  let htmlString;
+  let cssString;
+  
+  if (webhook.usesS3 === true) {
+    // Construct S3 paths for HTML and CSS files
+    const clientID = webhook.ClientID;
+    const webpageID = webhook.id;
+    const s3Bucket = "tgltoolboxuserfiles210135-staging";
+    const basePath = `public/clients/${clientID}/tooldata/e8ff58cb-9d86-45d6-b564-6ca938b5ad34/webpages/${webpageID}`;
+    const htmlKey = `${basePath}/index.html`;
+    const cssKey = `${basePath}/styles.css`;
+    
+    try {
+      // Fetch HTML and CSS from S3
+      htmlString = await readTextFileFromS3(s3Bucket, htmlKey);
+      cssString = await readTextFileFromS3(s3Bucket, cssKey);
+    } catch (error) {
+      // If S3 files are not found, fall back to DynamoDB values
+      console.error(`Failed to load files from S3: ${error.message}`);
+      htmlString = webhook.html || "";
+      cssString = webhook.style || "";
+    }
+  } else {
+    // Use DynamoDB values as before
+    htmlString = webhook.html;
+    cssString = webhook.style;
+  }
+  
   const title = webhook.title;
   const favicon = webhook?.favicon;
 
@@ -157,6 +184,8 @@ export async function handleGetRequest(event) {
     instanceId: instance.id,
     webhookId: instance.WebhookID,
     client,
+    values: inputs,
+    postEvent,
   });
 
   return {
